@@ -2,6 +2,9 @@
 
 namespace duckdb {
 
+TransactionStatement::TransactionStatement() : SQLStatement(StatementType::TRANSACTION_STATEMENT) {
+}
+
 TransactionStatement::TransactionStatement(unique_ptr<TransactionInfo> info)
     : SQLStatement(StatementType::TRANSACTION_STATEMENT), info(std::move(info)) {
 }

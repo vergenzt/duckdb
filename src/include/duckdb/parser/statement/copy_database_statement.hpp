@@ -12,7 +12,7 @@
 
 namespace duckdb {
 
-enum class CopyDatabaseType { COPY_SCHEMA, COPY_DATA };
+enum class CopyDatabaseType : uint8_t { COPY_SCHEMA, COPY_DATA };
 
 class CopyDatabaseStatement : public SQLStatement {
 public:
@@ -29,6 +29,8 @@ protected:
 	CopyDatabaseStatement(const CopyDatabaseStatement &other);
 
 public:
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<SQLStatement> Deserialize(Deserializer &deserializer);
 	DUCKDB_API unique_ptr<SQLStatement> Copy() const override;
 	string ToString() const override;
 

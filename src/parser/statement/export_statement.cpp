@@ -3,6 +3,9 @@
 
 namespace duckdb {
 
+ExportStatement::ExportStatement() : SQLStatement(StatementType::EXPORT_STATEMENT) {
+}
+
 ExportStatement::ExportStatement(unique_ptr<CopyInfo> info)
     : SQLStatement(StatementType::EXPORT_STATEMENT), info(std::move(info)) {
 }

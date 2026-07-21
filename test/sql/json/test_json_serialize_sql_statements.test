@@ -1,0 +1,68 @@
+# name: test/sql/json/test_json_serialize_sql_statements.test
+# description: json_serialize_sql / json_deserialize_sql round-trip for non-SELECT statements
+# group: [json]
+
+require json
+
+# json_serialize_sql accepts any statement type (not just SELECT)
+statement ok
+SELECT json_serialize_sql('UPDATE tbl SET a = 1 WHERE b = 2');
+
+# Round-trip: UPDATE
+query I
+SELECT json_deserialize_sql(json_serialize_sql('UPDATE tbl SET a = 1 WHERE b = 2'));
+----
+UPDATE tbl SET a = 1 WHERE (b = 2)
+
+# Round-trip: CREATE TABLE
+query I
+SELECT json_deserialize_sql(json_serialize_sql('CREATE TABLE tbl(i INTEGER, j VARCHAR)'));
+----
+CREATE TABLE tbl(i INTEGER, j VARCHAR);
+
+# Round-trip: CREATE VIEW (nested SELECT inside a CreateInfo)
+query I
+SELECT json_deserialize_sql(json_serialize_sql('CREATE VIEW v AS SELECT 1 AS x'));
+----
+CREATE VIEW v AS SELECT 1 AS x;
+
+# Round-trip: table macro (SELECT body stored as a QueryNode)
+query I
+SELECT json_deserialize_sql(json_serialize_sql('CREATE FUNCTION f() AS TABLE SELECT 1 AS x'));
+----
+CREATE MACRO f () AS TABLE (SELECT 1 AS x);
+
+# Round-trip: DELETE
+query I
+SELECT json_deserialize_sql(json_serialize_sql('DELETE FROM tbl WHERE i > 5'));
+----
+DELETE FROM tbl WHERE (i > 5)
+
+# Round-trip: INSERT ... SELECT
+statement ok
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl SELECT * FROM other'));
+
+# Round-trip: a plain SELECT still works (unchanged behavior)
+query I
+SELECT json_deserialize_sql(json_serialize_sql('SELECT a FROM tbl WHERE b IN (SELECT c FROM other)'));
+----
+SELECT a FROM tbl WHERE (b = ANY(SELECT c FROM other))
+
+# Round-trip: multiple statements
+statement ok
+SELECT json_deserialize_sql(json_serialize_sql('CREATE TABLE t(i INTEGER); INSERT INTO t VALUES (1)'));
+
+# Known limitation: a SELECT nested directly inside EXPLAIN/PREPARE/MULTI has no type
+# discriminator, so it cannot be deserialized through the base dispatch (serialize still works).
+statement ok
+SELECT json_serialize_sql('EXPLAIN SELECT 1');
+
+statement error
+SELECT json_deserialize_sql(json_serialize_sql('EXPLAIN SELECT 1'));
+----
+<REGEX>:.*did not find property 'type'.*
+
+statement error
+SELECT json_deserialize_sql(json_serialize_sql('PREPARE p AS SELECT 1'));
+----
+<REGEX>:.*did not find property 'type'.*

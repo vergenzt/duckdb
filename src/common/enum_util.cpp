@@ -193,6 +193,7 @@
 #include "duckdb/parser/query_node.hpp"
 #include "duckdb/parser/result_modifier.hpp"
 #include "duckdb/parser/simplified_token.hpp"
+#include "duckdb/parser/statement/copy_database_statement.hpp"
 #include "duckdb/parser/statement/copy_statement.hpp"
 #include "duckdb/parser/statement/explain_statement.hpp"
 #include "duckdb/parser/statement/insert_statement.hpp"
@@ -1422,6 +1423,24 @@ const char* EnumUtil::ToChars<CoordinateReferenceSystemType>(CoordinateReference
 template<>
 CoordinateReferenceSystemType EnumUtil::FromString<CoordinateReferenceSystemType>(const char *value) {
 	return static_cast<CoordinateReferenceSystemType>(StringUtil::StringToEnum(GetCoordinateReferenceSystemTypeValues(), 5, "CoordinateReferenceSystemType", value));
+}
+
+const StringUtil::EnumStringLiteral *GetCopyDatabaseTypeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(CopyDatabaseType::COPY_SCHEMA), "COPY_SCHEMA" },
+		{ static_cast<uint32_t>(CopyDatabaseType::COPY_DATA), "COPY_DATA" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<CopyDatabaseType>(CopyDatabaseType value) {
+	return StringUtil::EnumToString(GetCopyDatabaseTypeValues(), 2, "CopyDatabaseType", static_cast<uint32_t>(value));
+}
+
+template<>
+CopyDatabaseType EnumUtil::FromString<CopyDatabaseType>(const char *value) {
+	return static_cast<CopyDatabaseType>(StringUtil::StringToEnum(GetCopyDatabaseTypeValues(), 2, "CopyDatabaseType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetCopyFunctionFlushBatchReasonValues() {

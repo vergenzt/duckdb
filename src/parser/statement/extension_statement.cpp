@@ -1,6 +1,11 @@
 #include "duckdb/parser/statement/extension_statement.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 
 namespace duckdb {
+
+void ExtensionStatement::Serialize(Serializer &serializer) const {
+	throw SerializationException("Cannot serialize an ExtensionStatement");
+}
 
 ExtensionStatement::ExtensionStatement(ParserExtension extension_p, unique_ptr<ParserExtensionParseData> parse_data_p)
     : SQLStatement(StatementType::EXTENSION_STATEMENT), extension(std::move(extension_p)),

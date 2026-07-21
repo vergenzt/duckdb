@@ -24,6 +24,8 @@ protected:
 	LoadStatement(const LoadStatement &other);
 
 public:
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<SQLStatement> Deserialize(Deserializer &deserializer);
 	unique_ptr<SQLStatement> Copy() const override;
 	string ToString() const override;
 

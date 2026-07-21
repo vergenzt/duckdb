@@ -24,6 +24,8 @@ public:
 	unique_ptr<LogicalOperator> plan;
 
 public:
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<SQLStatement> Deserialize(Deserializer &deserializer);
 	unique_ptr<SQLStatement> Copy() const override {
 		throw NotImplementedException("PLAN_STATEMENT");
 	}

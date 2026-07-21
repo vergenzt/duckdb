@@ -1,5 +1,439 @@
 [
   {
+    "class": "SQLStatement",
+    "class_type": "type",
+    "includes": [
+      "duckdb/parser/statement/list.hpp",
+      "duckdb/parser/statement/multi_statement.hpp"
+    ],
+    "members": [
+      {
+        "id": 100,
+        "name": "type",
+        "type": "StatementType"
+      },
+      {
+        "id": 101,
+        "name": "named_param_map",
+        "type": "identifier_map_t<idx_t>"
+      }
+    ]
+  },
+  {
+    "class": "AlterStatement",
+    "base": "SQLStatement",
+    "enum": "ALTER_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "AlterInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "AttachStatement",
+    "base": "SQLStatement",
+    "enum": "ATTACH_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "AttachInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "CallStatement",
+    "base": "SQLStatement",
+    "enum": "CALL_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "function",
+        "type": "ParsedExpression*"
+      }
+    ]
+  },
+  {
+    "class": "ConnectStatement",
+    "base": "SQLStatement",
+    "enum": "CONNECT_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "ConnectInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "CopyStatement",
+    "base": "SQLStatement",
+    "enum": "COPY_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "CopyInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "CopyDatabaseStatement",
+    "base": "SQLStatement",
+    "enum": "COPY_DATABASE_STATEMENT",
+    "constructor": [
+      "from_database",
+      "to_database",
+      "copy_type"
+    ],
+    "members": [
+      {
+        "id": 200,
+        "name": "from_database",
+        "type": "Identifier"
+      },
+      {
+        "id": 201,
+        "name": "to_database",
+        "type": "Identifier"
+      },
+      {
+        "id": 202,
+        "name": "copy_type",
+        "type": "CopyDatabaseType"
+      }
+    ]
+  },
+  {
+    "class": "CreateStatement",
+    "base": "SQLStatement",
+    "enum": "CREATE_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "CreateInfo*"
+      }
+    ]
+  },
+  {
+    "class": "DeleteStatement",
+    "base": "SQLStatement",
+    "enum": "DELETE_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "node",
+        "type": "DeleteQueryNode*",
+        "base": "QueryNode"
+      }
+    ]
+  },
+  {
+    "class": "DetachStatement",
+    "base": "SQLStatement",
+    "enum": "DETACH_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "DetachInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "DisconnectStatement",
+    "base": "SQLStatement",
+    "enum": "DISCONNECT_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "DisconnectInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "DropStatement",
+    "base": "SQLStatement",
+    "enum": "DROP_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "DropInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "ExecuteStatement",
+    "base": "SQLStatement",
+    "enum": "EXECUTE_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "name",
+        "type": "Identifier"
+      },
+      {
+        "id": 201,
+        "name": "named_values",
+        "type": "identifier_map_t<unique_ptr<ParsedExpression>>"
+      }
+    ]
+  },
+  {
+    "class": "ExplainStatement",
+    "base": "SQLStatement",
+    "enum": "EXPLAIN_STATEMENT",
+    "constructor": [
+      "stmt",
+      "explain_type"
+    ],
+    "members": [
+      {
+        "id": 200,
+        "name": "stmt",
+        "type": "SQLStatement*"
+      },
+      {
+        "id": 201,
+        "name": "explain_type",
+        "type": "ExplainType"
+      }
+    ]
+  },
+  {
+    "class": "ExportStatement",
+    "base": "SQLStatement",
+    "enum": "EXPORT_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "CopyInfo*",
+        "base": "ParseInfo"
+      },
+      {
+        "id": 201,
+        "name": "database",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "class": "InsertStatement",
+    "base": "SQLStatement",
+    "enum": "INSERT_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "node",
+        "type": "InsertQueryNode*",
+        "base": "QueryNode"
+      }
+    ]
+  },
+  {
+    "class": "LoadStatement",
+    "base": "SQLStatement",
+    "enum": "LOAD_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "LoadInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "LogicalPlanStatement",
+    "base": "SQLStatement",
+    "enum": "LOGICAL_PLAN_STATEMENT",
+    "constructor": [
+      "plan"
+    ],
+    "members": [
+      {
+        "id": 200,
+        "name": "plan",
+        "type": "LogicalOperator*"
+      }
+    ]
+  },
+  {
+    "class": "MergeIntoStatement",
+    "base": "SQLStatement",
+    "enum": "MERGE_INTO_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "node",
+        "type": "MergeQueryNode*",
+        "base": "QueryNode"
+      }
+    ]
+  },
+  {
+    "class": "MultiStatement",
+    "base": "SQLStatement",
+    "enum": "MULTI_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "statements",
+        "type": "vector<SQLStatement*>"
+      }
+    ]
+  },
+  {
+    "class": "PragmaStatement",
+    "base": "SQLStatement",
+    "enum": "PRAGMA_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "PragmaInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "PrepareStatement",
+    "base": "SQLStatement",
+    "enum": "PREPARE_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "statement",
+        "type": "SQLStatement*"
+      },
+      {
+        "id": 201,
+        "name": "name",
+        "type": "Identifier"
+      }
+    ]
+  },
+  {
+    "class": "TransactionStatement",
+    "base": "SQLStatement",
+    "enum": "TRANSACTION_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "TransactionInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "UpdateExtensionsStatement",
+    "base": "SQLStatement",
+    "enum": "UPDATE_EXTENSIONS_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "UpdateExtensionsInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "UpdateStatement",
+    "base": "SQLStatement",
+    "enum": "UPDATE_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "node",
+        "type": "UpdateQueryNode*",
+        "base": "QueryNode"
+      }
+    ]
+  },
+  {
+    "class": "VacuumStatement",
+    "base": "SQLStatement",
+    "enum": "VACUUM_STATEMENT",
+    "members": [
+      {
+        "id": 200,
+        "name": "info",
+        "type": "VacuumInfo*",
+        "base": "ParseInfo"
+      }
+    ]
+  },
+  {
+    "class": "SetStatement",
+    "base": "SQLStatement",
+    "enum": "SET_STATEMENT",
+    "class_type": "set_type",
+    "members": [
+      {
+        "id": 200,
+        "name": "set_type",
+        "type": "SetType"
+      },
+      {
+        "id": 201,
+        "name": "name",
+        "type": "Identifier"
+      },
+      {
+        "id": 202,
+        "name": "scope",
+        "type": "SetScope"
+      }
+    ]
+  },
+  {
+    "class": "SetVariableStatement",
+    "base": "SetStatement",
+    "enum": "SET",
+    "members": [
+      {
+        "id": 300,
+        "name": "value",
+        "type": "ParsedExpression*"
+      }
+    ]
+  },
+  {
+    "class": "ResetVariableStatement",
+    "base": "SetStatement",
+    "enum": "RESET",
+    "members": []
+  },
+  {
+    "class": "RelationStatement",
+    "base": "SQLStatement",
+    "enum": "RELATION_STATEMENT",
+    "custom_implementation": true,
+    "custom_switch_code": "throw SerializationException(\"Cannot deserialize a RelationStatement\");"
+  },
+  {
+    "class": "ExtensionStatement",
+    "base": "SQLStatement",
+    "enum": "EXTENSION_STATEMENT",
+    "custom_implementation": true,
+    "custom_switch_code": "throw SerializationException(\"Cannot deserialize an ExtensionStatement\");"
+  },
+  {
     "class": "SelectStatement",
     "includes": [
       "duckdb/parser/statement/select_statement.hpp"

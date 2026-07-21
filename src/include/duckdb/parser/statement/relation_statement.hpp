@@ -28,6 +28,8 @@ protected:
 public:
 	unique_ptr<SQLStatement> Copy() const override;
 	string ToString() const override;
+	//! RelationStatement wraps a live Relation object and cannot be serialized
+	void Serialize(Serializer &serializer) const override;
 };
 
 } // namespace duckdb

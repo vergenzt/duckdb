@@ -9,6 +9,9 @@ SetStatement::SetStatement(Identifier name_p, SetScope scope_p, SetType type_p)
 
 // Set Variable
 
+SetVariableStatement::SetVariableStatement() : SetStatement(Identifier(), SetScope::AUTOMATIC, SetType::SET) {
+}
+
 SetVariableStatement::SetVariableStatement(Identifier name_p, unique_ptr<ParsedExpression> value_p, SetScope scope_p)
     : SetStatement(std::move(name_p), scope_p, SetType::SET), value(std::move(value_p)) {
 }
@@ -43,6 +46,9 @@ string SetVariableStatement::ToString() const {
 }
 
 // Reset Variable
+
+ResetVariableStatement::ResetVariableStatement() : SetStatement(Identifier(), SetScope::AUTOMATIC, SetType::RESET) {
+}
 
 ResetVariableStatement::ResetVariableStatement(Identifier name_p, SetScope scope_p)
     : SetStatement(std::move(name_p), scope_p, SetType::RESET) {

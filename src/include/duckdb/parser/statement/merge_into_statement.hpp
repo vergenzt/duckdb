@@ -62,6 +62,8 @@ protected:
 
 public:
 	string ToString() const override;
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<SQLStatement> Deserialize(Deserializer &deserializer);
 	unique_ptr<SQLStatement> Copy() const override;
 };
 

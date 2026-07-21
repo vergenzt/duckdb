@@ -105,14 +105,9 @@ static void JsonSerializeFunction(DataChunk &args, ExpressionState &state, Vecto
 			auto statements_arr = yyjson_mut_arr(doc);
 
 			for (auto &statement : parser.statements) {
-				if (statement->type != StatementType::SELECT_STATEMENT) {
-					throw NotImplementedException("Only SELECT statements can be serialized to json!");
-				}
-				auto &select = statement->Cast<SelectStatement>();
-
 				auto options = make_uniq<SerializationOptions>();
 				options->storage_compatibility = state.GetContext().db->config.options.storage_compatibility;
-				auto json = JsonSerializer::Serialize(select, doc, info.skip_if_null, info.skip_if_empty,
+				auto json = JsonSerializer::Serialize(*statement, doc, info.skip_if_null, info.skip_if_empty,
 				                                      info.skip_if_default, *options);
 
 				yyjson_mut_arr_append(statements_arr, json);
@@ -173,6 +168,17 @@ ScalarFunctionSet JSONFunctions::GetSerializeSqlFunction() {
 //----------------------------------------------------------------------
 // JSON DESERIALIZE
 //----------------------------------------------------------------------
+static void ValidateDeserializedSelect(SelectStatement &stmt) {
+	if (!stmt.node) {
+		throw ParserException("Error parsing json: no select node found in json");
+	}
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(*stmt.node, [](unique_ptr<ParsedExpression> &child) {
+		if (!child) {
+			throw ParserException("Error parsing json: null expression found in json");
+		}
+	});
+}
+
 static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t input, yyjson_alc *alc) {
 	auto doc = yyjson_doc_ptr(JSONCommon::ReadDocument(input, JSONCommon::READ_FLAG, alc));
 	if (!doc) {
@@ -207,15 +213,52 @@ static vector<unique_ptr<SelectStatement>> DeserializeSelectStatement(string_t i
 	yyjson_arr_foreach(statements, idx, max, stmt_json) {
 		JsonDeserializer deserializer(stmt_json, doc);
 		auto stmt = SelectStatement::Deserialize(deserializer);
-		if (!stmt->node) {
-			throw ParserException("Error parsing json: no select node found in json");
-		}
-		ParsedExpressionIterator::EnumerateQueryNodeChildren(*stmt->node, [](unique_ptr<ParsedExpression> &child) {
-			if (!child) {
-				throw ParserException("Error parsing json: null expression found in json");
-			}
-		});
+		ValidateDeserializedSelect(*stmt);
 		result.push_back(std::move(stmt));
+	}
+
+	return result;
+}
+
+static vector<unique_ptr<SQLStatement>> DeserializeStatements(string_t input, yyjson_alc *alc) {
+	auto doc = yyjson_doc_ptr(JSONCommon::ReadDocument(input, JSONCommon::READ_FLAG, alc));
+	if (!doc) {
+		throw ParserException("Could not parse json");
+	}
+	auto root = doc->root;
+	auto err = yyjson_obj_get(root, "error");
+	if (err && yyjson_is_true(err)) {
+		auto err_type = yyjson_obj_get(root, "error_type");
+		auto err_msg = yyjson_obj_get(root, "error_message");
+		if (err_type && err_msg) {
+			throw ParserException("Error parsing json: %s: %s", yyjson_get_str(err_type), yyjson_get_str(err_msg));
+		}
+		throw ParserException(
+		    "Error parsing json, expected error property to contain 'error_type' and 'error_message'");
+	}
+
+	auto statements = yyjson_obj_get(root, "statements");
+	if (!statements || !yyjson_is_arr(statements)) {
+		throw ParserException("Error parsing json: no statements array");
+	}
+	if (yyjson_arr_size(statements) == 0) {
+		throw ParserException("Error parsing json: no statements");
+	}
+
+	vector<unique_ptr<SQLStatement>> result;
+	idx_t idx;
+	idx_t max;
+	yyjson_val *stmt_json;
+	yyjson_arr_foreach(statements, idx, max, stmt_json) {
+		JsonDeserializer deserializer(stmt_json, doc);
+		// A bare SELECT statement is serialized without a "type" discriminator; anything else carries one.
+		if (yyjson_obj_get(stmt_json, "type")) {
+			result.push_back(SQLStatement::Deserialize(deserializer));
+		} else {
+			auto stmt = SelectStatement::Deserialize(deserializer);
+			ValidateDeserializedSelect(*stmt);
+			result.push_back(std::move(stmt));
+		}
 	}
 
 	return result;
@@ -231,7 +274,7 @@ static void JsonDeserializeFunction(DataChunk &args, ExpressionState &state, Vec
 
 	auto &heap = StringVector::GetStringHeap(result);
 	UnaryExecutor::Execute<string_t, string_t>(inputs, result, [&](string_t input) {
-		auto stmts = DeserializeSelectStatement(input, alc);
+		auto stmts = DeserializeStatements(input, alc);
 		// Combine all statements into a single semicolon separated string
 		string str;
 		for (idx_t i = 0; i < stmts.size(); i++) {

@@ -31,6 +31,8 @@ protected:
 	CopyStatement(const CopyStatement &other);
 
 public:
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<SQLStatement> Deserialize(Deserializer &deserializer);
 	DUCKDB_API unique_ptr<SQLStatement> Copy() const override;
 
 private:

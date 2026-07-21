@@ -42,7 +42,7 @@ public:
 	//! Whether or not the statements are equivalent
 	bool Equals(const SQLStatement &other) const;
 
-	void Serialize(Serializer &serializer) const;
+	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<SelectStatement> Deserialize(Deserializer &deserializer);
 };
 } // namespace duckdb

@@ -69,6 +69,8 @@ protected:
 
 public:
 	string ToString() const override;
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<SQLStatement> Deserialize(Deserializer &deserializer);
 	unique_ptr<SQLStatement> Copy() const override;
 
 	//! If the INSERT statement is inserted DIRECTLY from a values list (i.e. INSERT INTO tbl VALUES (...)) this returns

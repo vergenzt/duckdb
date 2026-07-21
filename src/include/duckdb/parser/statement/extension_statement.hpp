@@ -28,6 +28,8 @@ public:
 public:
 	unique_ptr<SQLStatement> Copy() const override;
 	string ToString() const override;
+	//! ExtensionStatement holds extension-defined parse data and cannot be serialized
+	void Serialize(Serializer &serializer) const override;
 };
 
 } // namespace duckdb
