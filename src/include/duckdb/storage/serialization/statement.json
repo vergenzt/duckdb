@@ -438,7 +438,8 @@
     "base": "SQLStatement",
     "enum": "CUSTOM_STATEMENT",
     "includes": [
-      "duckdb/parser/statement/custom_statement.hpp"
+      "duckdb/parser/statement/custom_statement.hpp",
+      "duckdb/parser/extension_node.hpp"
     ],
     "members": [
       {
@@ -449,7 +450,7 @@
       {
         "id": 201,
         "name": "children",
-        "type": "vector<unique_ptr<ParsedExpression>>"
+        "type": "vector<ExtensionNode>"
       },
       {
         "id": 202,

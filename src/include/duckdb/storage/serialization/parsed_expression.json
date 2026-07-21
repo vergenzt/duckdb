@@ -229,6 +229,9 @@
     "class": "ExtensionExpression",
     "base": "ParsedExpression",
     "enum": "EXTENSION",
+    "includes": [
+      "duckdb/parser/extension_node.hpp"
+    ],
     "members": [
       {
         "id": 200,
@@ -238,7 +241,9 @@
       {
         "id": 201,
         "name": "children",
-        "type": "vector<unique_ptr<ParsedExpression>>"
+        "type": "vector<ExtensionNode>",
+        "equals_skip": true,
+        "hash_skip": true
       },
       {
         "id": 202,

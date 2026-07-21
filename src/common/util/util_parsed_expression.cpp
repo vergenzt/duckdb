@@ -81,13 +81,6 @@ ConstChildrenView ParsedExpression::Children() const {
 		}
 		break;
 	}
-	case ExpressionClass::EXTENSION: {
-		auto &cast_expr = Cast<ExtensionExpression>();
-		for (auto &child : cast_expr.children) {
-			result.Append(*child);
-		}
-		break;
-	}
 	case ExpressionClass::FUNCTION: {
 		auto &cast_expr = Cast<FunctionExpression>();
 		if (cast_expr.Filter()) {
@@ -170,6 +163,7 @@ ConstChildrenView ParsedExpression::Children() const {
 	case ExpressionClass::LAMBDA_REF:
 	case ExpressionClass::CONSTANT:
 	case ExpressionClass::DEFAULT:
+	case ExpressionClass::EXTENSION:
 	case ExpressionClass::PARAMETER:
 	case ExpressionClass::POSITIONAL_REFERENCE:
 		// these node types have no children
@@ -218,13 +212,6 @@ ChildrenView ParsedExpression::ChildrenMutable() {
 	case ExpressionClass::CONJUNCTION: {
 		auto &cast_expr = Cast<ConjunctionExpression>();
 		for (auto &child : cast_expr.GetChildrenMutable()) {
-			result.Append(child);
-		}
-		break;
-	}
-	case ExpressionClass::EXTENSION: {
-		auto &cast_expr = Cast<ExtensionExpression>();
-		for (auto &child : cast_expr.children) {
 			result.Append(child);
 		}
 		break;
@@ -311,6 +298,7 @@ ChildrenView ParsedExpression::ChildrenMutable() {
 	case ExpressionClass::LAMBDA_REF:
 	case ExpressionClass::CONSTANT:
 	case ExpressionClass::DEFAULT:
+	case ExpressionClass::EXTENSION:
 	case ExpressionClass::PARAMETER:
 	case ExpressionClass::POSITIONAL_REFERENCE:
 		// these node types have no children
@@ -598,9 +586,6 @@ bool ExtensionExpression::Equals(const ParsedExpression &other) const {
 	if (tag != other_p.tag) {
 		return false;
 	}
-	if (!ParsedExpression::ListEquals(children, other_p.children)) {
-		return false;
-	}
 	if (properties != other_p.properties) {
 		return false;
 	}
@@ -617,9 +602,7 @@ hash_t ExtensionExpression::Hash() const {
 unique_ptr<ParsedExpression> ExtensionExpression::Copy() const {
 	auto copy = duckdb::unique_ptr<ExtensionExpression>(new ExtensionExpression());
 	copy->tag = tag;
-	for (auto &child : children) {
-		copy->children.push_back(child->Copy());
-	}
+	copy->children = children;
 	copy->properties = properties;
 	copy->CopyBase(*this);
 	return std::move(copy);

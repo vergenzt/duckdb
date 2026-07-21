@@ -171,6 +171,7 @@
 #include "duckdb/parser/expression/parameter_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
+#include "duckdb/parser/extension_node.hpp"
 #include "duckdb/parser/parsed_data/alter_database_info.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/parser/parsed_data/alter_scalar_function_info.hpp"
@@ -2274,6 +2275,27 @@ const char* EnumUtil::ToChars<ExtensionLoadResult>(ExtensionLoadResult value) {
 template<>
 ExtensionLoadResult EnumUtil::FromString<ExtensionLoadResult>(const char *value) {
 	return static_cast<ExtensionLoadResult>(StringUtil::StringToEnum(GetExtensionLoadResultValues(), 3, "ExtensionLoadResult", value));
+}
+
+const StringUtil::EnumStringLiteral *GetExtensionNodeTypeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(ExtensionNodeType::EXPRESSION), "EXPRESSION" },
+		{ static_cast<uint32_t>(ExtensionNodeType::QUERY_NODE), "QUERY_NODE" },
+		{ static_cast<uint32_t>(ExtensionNodeType::TABLE_REF), "TABLE_REF" },
+		{ static_cast<uint32_t>(ExtensionNodeType::STATEMENT), "STATEMENT" },
+		{ static_cast<uint32_t>(ExtensionNodeType::TYPE), "TYPE" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<ExtensionNodeType>(ExtensionNodeType value) {
+	return StringUtil::EnumToString(GetExtensionNodeTypeValues(), 5, "ExtensionNodeType", static_cast<uint32_t>(value));
+}
+
+template<>
+ExtensionNodeType EnumUtil::FromString<ExtensionNodeType>(const char *value) {
+	return static_cast<ExtensionNodeType>(StringUtil::StringToEnum(GetExtensionNodeTypeValues(), 5, "ExtensionNodeType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetExtensionUpdateResultTagValues() {
