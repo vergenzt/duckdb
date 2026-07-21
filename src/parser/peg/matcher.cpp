@@ -1425,12 +1425,16 @@ Matcher &MatcherFactory::CreateMatcher(const char *grammar, const char *root_rul
 			if (entry == parser.rules.end()) {
 				throw InternalException("PEG parser extension targets unknown rule '%s'", choice_ext.target_rule);
 			}
-			// token text is a view; choice_ext.alternative_rule lives in the (permanent) registry
+			// prepend "<alt> /" so the extension's alternative is tried before the core ones (needed
+			// for syntax that overlaps a catch-all, e.g. a keyword-led statement vs ExpressionStatement,
+			// or `$name` vs a named parameter). A non-matching alternative simply falls through.
+			// token text is a view; choice_ext.alternative_rule lives in the (permanent) registry.
 			auto &tokens = entry->second.tokens;
-			tokens.push_back(PEGToken {PEGTokenType::OPERATOR, string_t("/")});
-			tokens.push_back(PEGToken {PEGTokenType::REFERENCE,
-			                           string_t(choice_ext.alternative_rule.c_str(),
-			                                    UnsafeNumericCast<uint32_t>(choice_ext.alternative_rule.size()))});
+			tokens.insert(tokens.begin(), PEGToken {PEGTokenType::OPERATOR, string_t("/")});
+			tokens.insert(tokens.begin(),
+			              PEGToken {PEGTokenType::REFERENCE,
+			                        string_t(choice_ext.alternative_rule.c_str(),
+			                                 UnsafeNumericCast<uint32_t>(choice_ext.alternative_rule.size()))});
 		}
 	}
 
