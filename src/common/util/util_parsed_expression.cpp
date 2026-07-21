@@ -81,6 +81,13 @@ ConstChildrenView ParsedExpression::Children() const {
 		}
 		break;
 	}
+	case ExpressionClass::EXTENSION: {
+		auto &cast_expr = Cast<ExtensionExpression>();
+		for (auto &child : cast_expr.children) {
+			result.Append(*child);
+		}
+		break;
+	}
 	case ExpressionClass::FUNCTION: {
 		auto &cast_expr = Cast<FunctionExpression>();
 		if (cast_expr.Filter()) {
@@ -211,6 +218,13 @@ ChildrenView ParsedExpression::ChildrenMutable() {
 	case ExpressionClass::CONJUNCTION: {
 		auto &cast_expr = Cast<ConjunctionExpression>();
 		for (auto &child : cast_expr.GetChildrenMutable()) {
+			result.Append(child);
+		}
+		break;
+	}
+	case ExpressionClass::EXTENSION: {
+		auto &cast_expr = Cast<ExtensionExpression>();
+		for (auto &child : cast_expr.children) {
 			result.Append(child);
 		}
 		break;
@@ -572,6 +586,41 @@ bool DefaultExpression::Equals(const ParsedExpression &other) const {
 
 unique_ptr<ParsedExpression> DefaultExpression::Copy() const {
 	auto copy = duckdb::unique_ptr<DefaultExpression>(new DefaultExpression());
+	copy->CopyBase(*this);
+	return std::move(copy);
+}
+
+bool ExtensionExpression::Equals(const ParsedExpression &other) const {
+	if (!ParsedExpression::Equals(other)) {
+		return false;
+	}
+	auto &other_p = other.Cast<ExtensionExpression>();
+	if (tag != other_p.tag) {
+		return false;
+	}
+	if (!ParsedExpression::ListEquals(children, other_p.children)) {
+		return false;
+	}
+	if (properties != other_p.properties) {
+		return false;
+	}
+	return true;
+}
+
+hash_t ExtensionExpression::Hash() const {
+	hash_t hash = ParsedExpression::Hash();
+	hash = CombineHash(hash, duckdb::Hash<const char *>(tag.c_str()));
+	hash = CombineHash(hash, duckdb::Hash<const char *>(properties.c_str()));
+	return hash;
+}
+
+unique_ptr<ParsedExpression> ExtensionExpression::Copy() const {
+	auto copy = duckdb::unique_ptr<ExtensionExpression>(new ExtensionExpression());
+	copy->tag = tag;
+	for (auto &child : children) {
+		copy->children.push_back(child->Copy());
+	}
+	copy->properties = properties;
 	copy->CopyBase(*this);
 	return std::move(copy);
 }

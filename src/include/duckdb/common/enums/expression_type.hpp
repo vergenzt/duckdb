@@ -183,6 +183,8 @@ enum class ExpressionClass : uint8_t {
 	BETWEEN = 19,
 	LAMBDA_REF = 20,
 	TYPE = 21,
+	//! Generic escape node for parser extensions (never bound/executed)
+	EXTENSION = 22,
 	//===--------------------------------------------------------------------===//
 	// Bound Expressions
 	//===--------------------------------------------------------------------===//

@@ -226,6 +226,28 @@
     "members": []
   },
   {
+    "class": "ExtensionExpression",
+    "base": "ParsedExpression",
+    "enum": "EXTENSION",
+    "members": [
+      {
+        "id": 200,
+        "name": "tag",
+        "type": "string"
+      },
+      {
+        "id": 201,
+        "name": "children",
+        "type": "vector<unique_ptr<ParsedExpression>>"
+      },
+      {
+        "id": 202,
+        "name": "properties",
+        "type": "string"
+      }
+    ]
+  },
+  {
     "class": "FunctionExpression",
     "base": "ParsedExpression",
     "enum": "FUNCTION",

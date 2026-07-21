@@ -51,6 +51,9 @@ unique_ptr<ParsedExpression> ParsedExpression::Deserialize(Deserializer &deseria
 	case ExpressionClass::DEFAULT:
 		result = DefaultExpression::Deserialize(deserializer);
 		break;
+	case ExpressionClass::EXTENSION:
+		result = ExtensionExpression::Deserialize(deserializer);
+		break;
 	case ExpressionClass::FUNCTION:
 		result = FunctionExpression::Deserialize(deserializer);
 		break;
@@ -198,6 +201,21 @@ void DefaultExpression::Serialize(Serializer &serializer) const {
 
 unique_ptr<ParsedExpression> DefaultExpression::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<DefaultExpression>(new DefaultExpression());
+	return std::move(result);
+}
+
+void ExtensionExpression::Serialize(Serializer &serializer) const {
+	ParsedExpression::Serialize(serializer);
+	serializer.WritePropertyWithDefault<string>(200, "tag", tag);
+	serializer.WritePropertyWithDefault<vector<unique_ptr<ParsedExpression>>>(201, "children", children);
+	serializer.WritePropertyWithDefault<string>(202, "properties", properties);
+}
+
+unique_ptr<ParsedExpression> ExtensionExpression::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<ExtensionExpression>(new ExtensionExpression());
+	deserializer.ReadPropertyWithDefault<string>(200, "tag", result->tag);
+	deserializer.ReadPropertyWithDefault<vector<unique_ptr<ParsedExpression>>>(201, "children", result->children);
+	deserializer.ReadPropertyWithDefault<string>(202, "properties", result->properties);
 	return std::move(result);
 }
 

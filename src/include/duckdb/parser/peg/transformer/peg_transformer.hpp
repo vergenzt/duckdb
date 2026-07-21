@@ -4663,6 +4663,12 @@ public:
 		};
 	}
 
+	//! Register a transform handler for a grammar rule (used by parser extensions). Overwrites any
+	//! existing handler for the rule.
+	void RegisterTransformFunction(const string &rule_name, PEGTransformer::AnyTransformFunction function) {
+		sql_transform_functions[rule_name] = std::move(function);
+	}
+
 	PEGTransformerFactory(const PEGTransformerFactory &) = delete;
 
 	static unique_ptr<SQLStatement> TransformStatement(PEGTransformer &, ParseResult &list);

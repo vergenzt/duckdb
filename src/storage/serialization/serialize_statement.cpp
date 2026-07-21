@@ -7,6 +7,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/parser/statement/list.hpp"
 #include "duckdb/parser/statement/multi_statement.hpp"
+#include "duckdb/parser/statement/custom_statement.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/statement/update_statement.hpp"
 #include "duckdb/parser/statement/insert_statement.hpp"
@@ -44,6 +45,9 @@ unique_ptr<SQLStatement> SQLStatement::Deserialize(Deserializer &deserializer) {
 		break;
 	case StatementType::CREATE_STATEMENT:
 		result = CreateStatement::Deserialize(deserializer);
+		break;
+	case StatementType::CUSTOM_STATEMENT:
+		result = CustomStatement::Deserialize(deserializer);
 		break;
 	case StatementType::DELETE_STATEMENT:
 		result = DeleteStatement::Deserialize(deserializer);
@@ -222,6 +226,21 @@ void CreateStatement::Serialize(Serializer &serializer) const {
 unique_ptr<SQLStatement> CreateStatement::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<CreateStatement>(new CreateStatement());
 	deserializer.ReadPropertyWithDefault<unique_ptr<CreateInfo>>(200, "info", result->info);
+	return std::move(result);
+}
+
+void CustomStatement::Serialize(Serializer &serializer) const {
+	SQLStatement::Serialize(serializer);
+	serializer.WritePropertyWithDefault<string>(200, "tag", tag);
+	serializer.WritePropertyWithDefault<vector<unique_ptr<ParsedExpression>>>(201, "children", children);
+	serializer.WritePropertyWithDefault<string>(202, "properties", properties);
+}
+
+unique_ptr<SQLStatement> CustomStatement::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<CustomStatement>(new CustomStatement());
+	deserializer.ReadPropertyWithDefault<string>(200, "tag", result->tag);
+	deserializer.ReadPropertyWithDefault<vector<unique_ptr<ParsedExpression>>>(201, "children", result->children);
+	deserializer.ReadPropertyWithDefault<string>(202, "properties", result->properties);
 	return std::move(result);
 }
 

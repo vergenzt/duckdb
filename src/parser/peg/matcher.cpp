@@ -1,6 +1,7 @@
 #include "duckdb/parser/peg/matcher.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
+#include "duckdb/parser/peg/peg_parser_extension.hpp"
 
 // uncomment to dynamically read the PEG parser from a file instead of compiling it in (useful for testing)
 // #define PEG_PARSER_SOURCE_FILE "duckdb/parser/peg/inlined_grammar.gram"
@@ -1413,6 +1414,26 @@ Matcher &MatcherFactory::CreateMatcher(const char *grammar, const char *root_rul
 	PEGParser parser;
 	parser.ParseRules(grammar);
 
+	// apply registered parser extensions: add their grammar rules, then splice each extension's
+	// alternative into the designated core choice rule so it becomes reachable
+	for (auto &ext : PEGParserExtensionRegistry::Get().GetExtensions()) {
+		if (!ext.grammar.empty()) {
+			parser.ParseRules(ext.grammar.c_str());
+		}
+		for (auto &choice_ext : ext.choice_extensions) {
+			auto entry = parser.rules.find(choice_ext.target_rule);
+			if (entry == parser.rules.end()) {
+				throw InternalException("PEG parser extension targets unknown rule '%s'", choice_ext.target_rule);
+			}
+			// token text is a view; choice_ext.alternative_rule lives in the (permanent) registry
+			auto &tokens = entry->second.tokens;
+			tokens.push_back(PEGToken {PEGTokenType::OPERATOR, string_t("/")});
+			tokens.push_back(PEGToken {PEGTokenType::REFERENCE,
+			                           string_t(choice_ext.alternative_rule.c_str(),
+			                                    UnsafeNumericCast<uint32_t>(choice_ext.alternative_rule.size()))});
+		}
+	}
+
 	// keyword overrides
 	AddKeywordOverride("TABLE", 1, ' ');
 	AddKeywordOverride(".", 0, '\0');
@@ -1552,6 +1573,12 @@ shared_ptr<PEGTransformerFactory> ParserCache::GetTransformerFactory() {
 		}
 	}
 	auto new_factory = make_shared_ptr<PEGTransformerFactory>();
+	// register transform handlers contributed by parser extensions
+	for (auto &ext : PEGParserExtensionRegistry::Get().GetExtensions()) {
+		for (auto &transformer : ext.transformers) {
+			new_factory->RegisterTransformFunction(transformer.first, transformer.second);
+		}
+	}
 	std::unique_lock<std::mutex> lock(mutex);
 	if (!transformer_factory) {
 		transformer_factory = std::move(new_factory);

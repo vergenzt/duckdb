@@ -10,6 +10,7 @@ add_library_unity(
   matcher.cpp
   parser_packrat.cpp
   peg_parser.cpp
+  peg_parser_extension.cpp
   sql_formatter.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_parser_peg>
