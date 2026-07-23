@@ -42,6 +42,12 @@ DELETE FROM tbl WHERE (i > 5)
 statement ok
 SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl SELECT * FROM other'));
 
+# Round-trip: ATTACH (path lives in parsed_path at parse time, not the bound path string)
+query I
+SELECT json_deserialize_sql(json_serialize_sql('ATTACH ''foo.db'' AS bar'));
+----
+ATTACH DATABASE 'foo.db' AS bar;
+
 # Round-trip: a plain SELECT still works (unchanged behavior)
 query I
 SELECT json_deserialize_sql(json_serialize_sql('SELECT a FROM tbl WHERE b IN (SELECT c FROM other)'));

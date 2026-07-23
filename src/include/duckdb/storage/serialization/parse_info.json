@@ -461,6 +461,16 @@
         "name": "on_conflict",
         "type": "OnCreateConflict",
         "default": "OnCreateConflict::ERROR_ON_CONFLICT"
+      },
+      {
+        "id": 204,
+        "name": "parsed_path",
+        "type": "ParsedExpression*"
+      },
+      {
+        "id": 205,
+        "name": "parsed_options",
+        "type": "case_insensitive_map_t<ParsedExpression*>"
       }
     ]
   },
@@ -544,6 +554,11 @@
         "id": 209,
         "name": "is_format_auto_detected",
         "type": "bool"
+      },
+      {
+        "id": 210,
+        "name": "parsed_options",
+        "type": "case_insensitive_map_t<ParsedExpression*>"
       }
     ],
     "methods": {
@@ -601,6 +616,11 @@
         "id": 203,
         "name": "options",
         "type": "unordered_map<string, Value>"
+      },
+      {
+        "id": 204,
+        "name": "parsed_options",
+        "type": "case_insensitive_map_t<ParsedExpression*>"
       }
     ]
   },
