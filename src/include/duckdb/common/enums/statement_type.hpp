@@ -54,7 +54,8 @@ enum class StatementType : uint8_t {
 	MERGE_INTO_STATEMENT,
 	CONNECT_STATEMENT,
 	DISCONNECT_STATEMENT,
-	EXTERNAL_RESOURCE_STATEMENT
+	EXTERNAL_RESOURCE_STATEMENT,
+	CUSTOM_STATEMENT // generic self-describing extension statement (never bound/executed)
 };
 
 DUCKDB_API string StatementTypeToString(StatementType type);

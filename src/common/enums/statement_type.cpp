@@ -73,6 +73,8 @@ string StatementTypeToString(StatementType type) {
 		return "DISCONNECT";
 	case StatementType::EXTERNAL_RESOURCE_STATEMENT:
 		return "EXTERNAL_RESOURCE";
+	case StatementType::CUSTOM_STATEMENT:
+		return "CUSTOM";
 	case StatementType::INVALID_STATEMENT:
 		break;
 	}

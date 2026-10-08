@@ -234,6 +234,8 @@ string ExpressionClassToString(ExpressionClass type) {
 		return "BOUND_PARAMETER";
 	case ExpressionClass::PATTERN:
 		return "PATTERN";
+	case ExpressionClass::EXTENSION:
+		return "EXTENSION";
 	case ExpressionClass::BOUND_REF:
 		return "BOUND_REF";
 	case ExpressionClass::BOUND_SUBQUERY:

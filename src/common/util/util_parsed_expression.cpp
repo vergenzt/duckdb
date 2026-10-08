@@ -187,6 +187,7 @@ ConstChildrenView ParsedExpression::Children() const {
 	case ExpressionClass::LAMBDA_REF:
 	case ExpressionClass::CONSTANT:
 	case ExpressionClass::DEFAULT:
+	case ExpressionClass::EXTENSION:
 	case ExpressionClass::PARAMETER:
 	case ExpressionClass::POSITIONAL_REFERENCE:
 		// these node types have no children
@@ -345,6 +346,7 @@ ChildrenView ParsedExpression::ChildrenMutable() {
 	case ExpressionClass::LAMBDA_REF:
 	case ExpressionClass::CONSTANT:
 	case ExpressionClass::DEFAULT:
+	case ExpressionClass::EXTENSION:
 	case ExpressionClass::PARAMETER:
 	case ExpressionClass::POSITIONAL_REFERENCE:
 		// these node types have no children
@@ -624,6 +626,36 @@ bool DefaultExpression::Equals(const ParsedExpression &other) const {
 
 unique_ptr<ParsedExpression> DefaultExpression::Copy() const {
 	auto copy = duckdb::unique_ptr<DefaultExpression>(new DefaultExpression());
+	copy->CopyBase(*this);
+	return std::move(copy);
+}
+
+bool ExtensionExpression::Equals(const ParsedExpression &other) const {
+	if (!ParsedExpression::Equals(other)) {
+		return false;
+	}
+	auto &other_p = other.Cast<ExtensionExpression>();
+	if (tag != other_p.tag) {
+		return false;
+	}
+	if (properties != other_p.properties) {
+		return false;
+	}
+	return true;
+}
+
+hash_t ExtensionExpression::Hash() const {
+	hash_t hash = ParsedExpression::Hash();
+	hash = CombineHash(hash, duckdb::Hash<const char *>(tag.c_str()));
+	hash = CombineHash(hash, duckdb::Hash<const char *>(properties.c_str()));
+	return hash;
+}
+
+unique_ptr<ParsedExpression> ExtensionExpression::Copy() const {
+	auto copy = duckdb::unique_ptr<ExtensionExpression>(new ExtensionExpression());
+	copy->tag = tag;
+	copy->children = children;
+	copy->properties = properties;
 	copy->CopyBase(*this);
 	return std::move(copy);
 }

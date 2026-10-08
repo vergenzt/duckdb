@@ -434,6 +434,32 @@
     "custom_switch_code": "throw SerializationException(\"Cannot deserialize an ExtensionStatement\");"
   },
   {
+    "class": "CustomStatement",
+    "base": "SQLStatement",
+    "enum": "CUSTOM_STATEMENT",
+    "includes": [
+      "duckdb/parser/statement/custom_statement.hpp",
+      "duckdb/parser/extension_node.hpp"
+    ],
+    "members": [
+      {
+        "id": 200,
+        "name": "tag",
+        "type": "string"
+      },
+      {
+        "id": 201,
+        "name": "children",
+        "type": "vector<ExtensionNode>"
+      },
+      {
+        "id": 202,
+        "name": "properties",
+        "type": "string"
+      }
+    ]
+  },
+  {
     "class": "SelectStatement",
     "includes": [
       "duckdb/parser/statement/select_statement.hpp"
