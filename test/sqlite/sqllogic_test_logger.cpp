@@ -4,6 +4,7 @@
 #include "result_helper.hpp"
 #include "sqllogic_test_runner.hpp"
 #include "test_helpers.hpp"
+#include "test_reporter.hpp"
 #include "duckdb/common/box_renderer.hpp"
 #include "duckdb/common/box_renderer_context.hpp"
 
@@ -53,6 +54,11 @@ void SQLLogicTestLogger::PrintSkip(const string &file_name, const string &reason
 	// (which survives subprocess capture) per skipped test, so skips are attributable
 	// even inside a batched invocation.
 	std::cerr << "[SKIP_TEST] " << file_name << " :: " << reason << "\n";
+}
+
+void SQLLogicTestLogger::ReportSkip(const string &file_name, const string &reason) {
+	PrintSkip(file_name, reason);
+	TestReporter::Get().Skip(reason);
 }
 
 void SQLLogicTestLogger::PrintSummaryHeader(const std::string &file_name, idx_t query_line) {
@@ -220,7 +226,7 @@ void SQLLogicTestLogger::OutputResult(MaterializedQueryResult &result, const vec
 		if (c != 0) {
 			LogFailure("\t");
 		}
-		LogFailure(result.names[c]);
+		LogFailure(result.ColumnName(c).GetIdentifierName());
 	}
 	LogFailure("\n");
 	// types
@@ -228,7 +234,7 @@ void SQLLogicTestLogger::OutputResult(MaterializedQueryResult &result, const vec
 		if (c != 0) {
 			LogFailure("\t");
 		}
-		LogFailure(result.types[c].ToString());
+		LogFailure(result.GetTypes()[c].ToString());
 	}
 	LogFailure("\n");
 	PrintLineSep();

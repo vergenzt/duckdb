@@ -38,7 +38,7 @@ namespace duckdb {
 
 ConversionException TryCast::UnimplementedErrorMessage(PhysicalType source, PhysicalType target,
                                                        optional_ptr<CastParameters> parameters) {
-	optional_idx query_location;
+	QueryLocation query_location;
 	if (parameters) {
 		query_location = parameters->query_location;
 		if (parameters->cast_source && parameters->cast_target) {
@@ -1639,6 +1639,26 @@ string_t CastFromPointer::Operation(uintptr_t input, StringHeap &heap) {
 }
 
 //===--------------------------------------------------------------------===//
+// Cast To Pointer
+//===--------------------------------------------------------------------===//
+template <>
+uintptr_t CastToPointer::Operation(string_t input) {
+	auto data = input.GetData();
+	auto size = input.GetSize();
+	if (size < 3 || data[0] != '0' || (data[1] != 'x' && data[1] != 'X')) {
+		throw ConversionException("Could not convert string '%s' to a pointer", input.GetString());
+	}
+	uint64_t address = 0;
+	for (idx_t i = 2; i < size; i++) {
+		if (!StringUtil::CharacterIsHex(data[i]) || address > (NumericLimits<uint64_t>::Maximum() >> 4)) {
+			throw ConversionException("Could not convert string '%s' to a pointer", input.GetString());
+		}
+		address = (address << 4) | StringUtil::GetHexValue(data[i]);
+	}
+	return NumericCast<uintptr_t>(address);
+}
+
+//===--------------------------------------------------------------------===//
 // Cast From Pointer
 //===--------------------------------------------------------------------===//
 template <>
@@ -1817,17 +1837,52 @@ template <>
 bool TryCastToGeometry::Operation(string_t input, string_t &result, Vector &result_vector, CastParameters &parameters) {
 	// Pass the query location of the cast source if available.
 	return Geometry::FromString(input, result, StringVector::GetStringHeap(result_vector), parameters.strict,
-	                            parameters.cast_source ? parameters.cast_source->GetQueryLocation() : optional_idx());
+	                            parameters.cast_source ? parameters.cast_source->GetQueryLocation() : QueryLocation());
 }
 
 //===--------------------------------------------------------------------===//
 // Cast To Date
 //===--------------------------------------------------------------------===//
+static DateCastResult TryConvertDateCast(string_t input, date_t &result, bool strict) {
+	idx_t pos = 0;
+	bool special = false;
+	auto date_result = Date::TryConvertDate(input.GetData(), input.GetSize(), pos, result, special, strict);
+	auto timestamp_suffix_pos = pos;
+	if (date_result == DateCastResult::SUCCESS) {
+		while (pos < input.GetSize() && StringUtil::CharacterIsSpace(input.GetData()[pos])) {
+			pos++;
+		}
+		if (pos == input.GetSize()) {
+			return date_result;
+		}
+	}
+	if (strict || date_result != DateCastResult::SUCCESS) {
+		return date_result;
+	}
+
+	timestamp_t timestamp;
+	auto timestamp_result =
+	    Timestamp::TryConvertTimestamp(input.GetData(), input.GetSize(), timestamp, /*use_offset=*/false, nullptr,
+	                                   /*strict=*/false);
+	if (timestamp_result == TimestampCastResult::SUCCESS) {
+		return DateCastResult::SUCCESS;
+	}
+	if (timestamp_result == TimestampCastResult::ERROR_RANGE) {
+		string timestamp_input = "2000-01-01"; // placeholder
+		timestamp_input.append(input.GetData() + timestamp_suffix_pos, input.GetSize() - timestamp_suffix_pos);
+		timestamp_result = Timestamp::TryConvertTimestamp(timestamp_input.c_str(), timestamp_input.size(), timestamp,
+		                                                  /*use_offset=*/false, /*nanos=*/nullptr, /*strict=*/false);
+		if (timestamp_result == TimestampCastResult::SUCCESS) {
+			return DateCastResult::SUCCESS;
+		}
+	}
+	return timestamp_result == TimestampCastResult::ERROR_RANGE ? DateCastResult::ERROR_RANGE
+	                                                            : DateCastResult::ERROR_INCORRECT_FORMAT;
+}
+
 template <>
 bool TryCastErrorMessage::Operation(string_t input, date_t &result, CastParameters &parameters) {
-	idx_t pos;
-	bool special = false;
-	switch (Date::TryConvertDate(input.GetData(), input.GetSize(), pos, result, special, parameters.strict)) {
+	switch (TryConvertDateCast(input, result, parameters.strict)) {
 	case DateCastResult::SUCCESS:
 		break;
 	case DateCastResult::ERROR_INCORRECT_FORMAT:
@@ -1842,15 +1897,21 @@ bool TryCastErrorMessage::Operation(string_t input, date_t &result, CastParamete
 
 template <>
 bool TryCast::Operation(string_t input, date_t &result, bool strict) {
-	idx_t pos;
-	bool special = false;
-	return Date::TryConvertDate(input.GetData(), input.GetSize(), pos, result, special, strict) ==
-	       DateCastResult::SUCCESS;
+	return TryConvertDateCast(input, result, strict) == DateCastResult::SUCCESS;
 }
 
 template <>
 date_t Cast::Operation(string_t input) {
-	return Date::FromCString(input.GetData(), input.GetSize());
+	date_t result;
+	switch (TryConvertDateCast(input, result, false)) {
+	case DateCastResult::SUCCESS:
+		return result;
+	case DateCastResult::ERROR_INCORRECT_FORMAT:
+		throw ConversionException(Date::FormatError(input));
+	case DateCastResult::ERROR_RANGE:
+		throw ConversionException(Date::RangeError(input));
+	}
+	throw InternalException("Unknown DateCastResult");
 }
 
 //===--------------------------------------------------------------------===//
@@ -2163,12 +2224,38 @@ struct HugeIntegerCastOperation {
 
 	template <class T, bool NEGATIVE>
 	static bool HandleHexDigit(T &state, uint8_t digit) {
-		return false;
+		static_assert(!NEGATIVE, "HugeInt hex cast does not support negative values");
+		const uint64_t upper = static_cast<uint64_t>(state.result.upper);
+		const uint64_t lower = static_cast<uint64_t>(state.result.lower);
+		if (DUCKDB_UNLIKELY(upper >> 60)) {
+			return false;
+		}
+		state.result.upper = static_cast<decltype(state.result.upper)>((upper << 4) | (lower >> 60));
+		state.result.lower = static_cast<decltype(state.result.lower)>((lower << 4) | digit);
+		if constexpr (std::is_signed<decltype(state.result.upper)>::value) {
+			if (DUCKDB_UNLIKELY(state.result.upper < 0)) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	template <class T, bool NEGATIVE>
 	static bool HandleBinaryDigit(T &state, uint8_t digit) {
-		return false;
+		static_assert(!NEGATIVE, "HugeInt binary cast does not support negative values");
+		const uint64_t upper = static_cast<uint64_t>(state.result.upper);
+		const uint64_t lower = static_cast<uint64_t>(state.result.lower);
+		if (DUCKDB_UNLIKELY(upper >> 63)) {
+			return false;
+		}
+		state.result.upper = static_cast<decltype(state.result.upper)>((upper << 1) | (lower >> 63));
+		state.result.lower = static_cast<decltype(state.result.lower)>((lower << 1) | digit);
+		if constexpr (std::is_signed<decltype(state.result.upper)>::value) {
+			if (DUCKDB_UNLIKELY(state.result.upper < 0)) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	template <class T, bool NEGATIVE>
@@ -2785,7 +2872,7 @@ bool DoubleToDecimalCast(SRC input, DST &result, CastParameters &parameters, uin
 		return false;
 	}
 	// For some reason PG does not use statistical rounding here (even though it _does_ for integers...)
-	result = Cast::Operation<SRC, DST>(static_cast<SRC>(roundedValue));
+	result = Cast::Operation<double, DST>(roundedValue);
 	return true;
 }
 
@@ -3192,20 +3279,24 @@ static void FillDecimalDigits(SRC input, duckdb_fast_float::decimal &decimal, bo
 }
 
 static void FillDecimalDigits(hugeint_t input, duckdb_fast_float::decimal &decimal, bool &negative) {
+	if (input == 0) {
+		return;
+	}
+
 	if (input < 0) {
 		negative = true;
 		Hugeint::NegateInPlace(input);
 	} else {
 		negative = false;
 	}
-	uint8_t digits[DecimalWidth<hugeint_t>::max];
-	while (input > 0) {
-		uint64_t remainder;
-		input = Hugeint::DivModPositive(input, 10, remainder);
-		digits[decimal.num_digits++] = UnsafeNumericCast<uint8_t>(remainder);
-	}
+
+	char buffer[DecimalWidth<hugeint_t>::max];
+	auto end = buffer + sizeof(buffer);
+	auto begin = NumericHelper::FormatUnsigned(input, end);
+
+	decimal.num_digits = UnsafeNumericCast<uint32_t>(end - begin);
 	for (uint32_t i = 0; i < decimal.num_digits; i++) {
-		decimal.digits[i] = digits[decimal.num_digits - i - 1];
+		decimal.digits[i] = UnsafeNumericCast<uint8_t>(begin[i] - '0');
 	}
 }
 

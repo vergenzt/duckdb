@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/enums/catalog_type.hpp"
+#include "duckdb/common/enums/database_modification_type.hpp"
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/parser/parsed_data/parse_info.hpp"
 #include "duckdb/parser/qualified_name.hpp"
@@ -53,6 +54,7 @@ public:
 	InsertionOrderPreservingMap<string> tags;
 
 public:
+	DatabaseModificationType GetModifications() const;
 	const QualifiedName &GetQualifiedName() const {
 		return qualified_name;
 	}
@@ -76,11 +78,14 @@ public:
 	}
 	//! Set the catalog, keeping the schema and name
 	void SetCatalog(Identifier catalog) {
-		qualified_name = QualifiedName(std::move(catalog), qualified_name.Schema(), qualified_name.Name());
+		qualified_name = qualified_name.WithCatalog(std::move(catalog));
 	}
 	//! Renders the qualified name for ToString - the catalog is omitted for temporary entries and the default schema is
 	//! hidden
 	DUCKDB_API string QualifiedNameToString() const;
+	//! Drop the catalog component from the qualified name, keeping the (possibly nested) schema path. Use this before
+	//! rendering an entry that lives in a catalog: its catalog is implied by where the statement is run.
+	DUCKDB_API void StripCatalogQualification();
 
 public:
 	void Serialize(Serializer &serializer) const override;

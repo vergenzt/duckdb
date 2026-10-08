@@ -89,9 +89,22 @@ unique_ptr<Expression> CreateSelectivityOptionalFilterExpression(unique_ptr<Expr
 
 unique_ptr<Expression> CreateDynamicFilterExpression(shared_ptr<DynamicFilterData> filter_data,
                                                      const LogicalType &target_type) {
+	return CreateDynamicFilterExpression(std::move(filter_data), target_type, nullptr);
+}
+
+unique_ptr<Expression> CreateDynamicFilterExpression(shared_ptr<DynamicFilterData> filter_data,
+                                                     const LogicalType &target_type, unique_ptr<Expression> input) {
 	auto function = DynamicFilterScalarFun::GetFunction(target_type);
 	auto bind_data = make_uniq<DynamicFilterFunctionData>(std::move(filter_data));
-	return CreateSingleArgumentFunctionExpression(function, target_type, std::move(bind_data));
+	if (!input) {
+		input = make_uniq<BoundReferenceExpression>(target_type, storage_t(0));
+	} else {
+		D_ASSERT(input->GetReturnType() == target_type);
+	}
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(std::move(input));
+	return make_uniq<BoundFunctionExpression>(BoundScalarFunction(function), std::move(arguments),
+	                                          std::move(bind_data));
 }
 
 void TableFilterFunctionSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
@@ -105,7 +118,7 @@ unique_ptr<FunctionData> TableFilterFunctionDeserialize(Deserializer &deserializ
 		return make_uniq<BloomFilterFunctionData>(nullptr, false, string(), key_type, 0.0f, idx_t(0));
 	}
 	if (function.GetName() == PrefixRangeScalarFun::NAME) {
-		return make_uniq<PrefixRangeFunctionData>(nullptr, string(), key_type, 0.0f, idx_t(0));
+		return make_uniq<PrefixRangeFunctionData>(nullptr, true, string(), key_type, 0.0f, idx_t(0));
 	}
 	if (function.GetName() == DynamicFilterScalarFun::NAME) {
 		return make_uniq<DynamicFilterFunctionData>(nullptr);

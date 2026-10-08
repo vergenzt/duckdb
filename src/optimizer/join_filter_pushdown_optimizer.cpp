@@ -2,13 +2,15 @@
 
 #include "duckdb/execution/operator/join/join_filter_pushdown.hpp"
 #include "duckdb/execution/operator/join/physical_comparison_join.hpp"
-#include "duckdb/function/aggregate/distributive_function_utils.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/optimizer/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
@@ -39,7 +41,13 @@ static bool IsJoinFilterPushdownVariantIntegralCast(const LogicalType &src, cons
 	return false;
 }
 
-static bool PushdownJoinFilterExpressionInternal(const Expression &expr, JoinFilterPushdownColumn &filter) {
+struct JoinFilterExpressionPath {
+	ColumnBinding binding;
+	JoinFilterPushdownMode mode = JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION;
+	vector<RuntimeFilterCastStep> casts;
+};
+
+static bool PushdownJoinFilterExpressionInternal(const Expression &expr, JoinFilterExpressionPath &path) {
 	const auto &return_type = expr.GetReturnType();
 	if (return_type.IsNested() && return_type.id() != LogicalTypeId::VARIANT) {
 		// nested columns are not supported for pushdown
@@ -49,54 +57,50 @@ static bool PushdownJoinFilterExpressionInternal(const Expression &expr, JoinFil
 		// interval is not supported for pushdown
 		return false;
 	}
-	if (filter.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION && !filter.runtime_filter_type.IsValid()) {
-		filter.runtime_filter_type = return_type;
-	}
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COLUMN_REF: {
 		// column-ref - pass through the new column binding
 		auto &colref = expr.Cast<BoundColumnRefExpression>();
-		filter.probe_column_index = colref.Binding();
+		path.binding = colref.Binding();
 		return true;
 	}
-	case ExpressionClass::BOUND_CAST: {
+	case ExpressionClass::BOUND_FUNCTION: {
+		if (!BoundCastExpression::IsCast(expr)) {
+			auto &function_expr = expr.Cast<BoundFunctionExpression>();
+			if (function_expr.Function().GetName() != "variant_normalize" || function_expr.GetChildren().size() != 1) {
+				return false;
+			}
+			return PushdownJoinFilterExpressionInternal(*function_expr.GetChildren()[0], path);
+		}
 		// We allow pushing through integral casts and integral/VARIANT casts.
-		const auto &bound_cast = expr.Cast<BoundCastExpression>();
-		const auto &src = bound_cast.Child().GetReturnType();
+		const auto &bound_cast = expr.Cast<BoundFunctionExpression>();
+		const auto &src = BoundCastExpression::Child(bound_cast).GetReturnType();
 		const auto &tgt = bound_cast.GetReturnType();
 		const bool integral_cast = IsJoinFilterPushdownIntegralCast(src, tgt);
 		const bool variant_integral_cast = IsJoinFilterPushdownVariantIntegralCast(src, tgt);
 		if (!integral_cast && !variant_integral_cast) {
 			return false;
 		}
-		if (!PushdownJoinFilterExpressionInternal(bound_cast.Child(), filter)) {
+		if (!PushdownJoinFilterExpressionInternal(BoundCastExpression::Child(bound_cast), path)) {
 			return false;
 		}
 		if (variant_integral_cast) {
 			if (tgt.id() == LogicalTypeId::VARIANT) {
-				filter.mode = JoinFilterPushdownMode::STORAGE_ONLY;
-				filter.runtime_filter_type = LogicalType::INVALID;
+				path.mode = JoinFilterPushdownMode::STORAGE_ONLY;
+				path.casts.clear();
+			} else if (path.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION) {
+				path.casts.emplace_back(tgt, BoundCastExpression::IsTryCast(bound_cast)
+				                                 ? RuntimeFilterCastMode::TRY_CAST
+				                                 : RuntimeFilterCastMode::DEFAULT_CAST);
 			}
 			return true;
 		}
-		const bool widening_signed_cast =
-		    src.IsSigned() == tgt.IsSigned() && GetTypeIdSize(tgt.InternalType()) >= GetTypeIdSize(src.InternalType());
-		const bool widening_unsigned_to_signed_cast =
-		    !src.IsSigned() && tgt.IsSigned() && GetTypeIdSize(tgt.InternalType()) > GetTypeIdSize(src.InternalType());
-		if (widening_signed_cast || widening_unsigned_to_signed_cast) {
-			filter.runtime_filter_type = expr.GetReturnType();
-		} else {
-			filter.mode = JoinFilterPushdownMode::STORAGE_ONLY;
-			filter.runtime_filter_type = LogicalType::INVALID;
+		if (path.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION) {
+			path.casts.emplace_back(tgt, BoundCastExpression::IsTryCast(bound_cast)
+			                                 ? RuntimeFilterCastMode::TRY_CAST
+			                                 : RuntimeFilterCastMode::DEFAULT_CAST);
 		}
 		return true;
-	}
-	case ExpressionClass::BOUND_FUNCTION: {
-		auto &function_expr = expr.Cast<BoundFunctionExpression>();
-		if (function_expr.Function().GetName() != "variant_normalize" || function_expr.GetChildren().size() != 1) {
-			return false;
-		}
-		return PushdownJoinFilterExpressionInternal(*function_expr.GetChildren()[0], filter);
 	}
 	default:
 		return false;
@@ -104,7 +108,21 @@ static bool PushdownJoinFilterExpressionInternal(const Expression &expr, JoinFil
 }
 
 bool JoinFilterPushdownUtil::PushdownJoinFilterExpression(const Expression &expr, JoinFilterPushdownColumn &filter) {
-	return PushdownJoinFilterExpressionInternal(expr, filter);
+	JoinFilterExpressionPath path;
+	if (!PushdownJoinFilterExpressionInternal(expr, path)) {
+		return false;
+	}
+	filter.probe_column_index = path.binding;
+	if (filter.mode == JoinFilterPushdownMode::STORAGE_ONLY) {
+		return true;
+	}
+	if (path.mode == JoinFilterPushdownMode::STORAGE_ONLY) {
+		filter.mode = JoinFilterPushdownMode::STORAGE_ONLY;
+		filter.runtime_filter_casts.clear();
+		return true;
+	}
+	filter.runtime_filter_casts.insert(filter.runtime_filter_casts.begin(), path.casts.begin(), path.casts.end());
+	return true;
 }
 
 bool JoinFilterPushdownUtil::JoinTypeIsSupported(JoinType join_type) {
@@ -150,13 +168,15 @@ void JoinFilterPushdownOptimizer::GetPushdownFilterTargets(LogicalOperator &op,
 		// LIMIT/TOP_N determines which rows are part of the probe side before the join.
 		// Pushing a join filter below it can change which rows survive the limit/offset.
 		break;
-	case LogicalOperatorType::LOGICAL_FILTER:
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 	case LogicalOperatorType::LOGICAL_DISTINCT:
-	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
 	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
 		// does not affect probe side - recurse into left child
 		// FIXME: we can probably recurse into more operators here (e.g. window, unnest)
+		GetPushdownFilterTargets(*probe_child.children[0], std::move(columns), targets);
+		break;
+	case LogicalOperatorType::LOGICAL_FILTER:
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
 		GetPushdownFilterTargets(*probe_child.children[0], std::move(columns), targets);
 		break;
 	case LogicalOperatorType::LOGICAL_UNNEST: {
@@ -226,9 +246,12 @@ void JoinFilterPushdownOptimizer::GetPushdownFilterTargets(LogicalOperator &op,
 				}
 			}
 			D_ASSERT(filter.storage_type != LogicalType::INVALID);
+			const auto reconstructed_type = filter.runtime_filter_casts.empty()
+			                                    ? filter.storage_type
+			                                    : filter.runtime_filter_casts.back().target_type;
 			if (filter.storage_type.id() == LogicalTypeId::VARIANT &&
 			    filter.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
-			    filter.runtime_filter_type.id() == LogicalTypeId::VARIANT) {
+			    reconstructed_type.id() == LogicalTypeId::VARIANT) {
 				return;
 			}
 		}
@@ -361,15 +384,15 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 	}
 
 	// set up the min/max aggregates for each of the filters
-	vector<AggregateFunction> aggr_functions;
-	aggr_functions.push_back(MinFunction::GetFunction());
-	aggr_functions.push_back(MaxFunction::GetFunction());
+	auto &context = optimizer.GetContext();
 	for (auto &join_condition : pushdown_info->join_condition) {
-		for (auto &aggr : aggr_functions) {
-			FunctionBinder function_binder(optimizer.GetContext());
+		for (const auto &aggr_name : {MinFun::Name, MaxFun::Name}) {
+			FunctionBinder function_binder(context);
 			vector<unique_ptr<Expression>> aggr_children;
 			aggr_children.push_back(join.conditions[join_condition].GetRHS().Copy());
-			auto aggr_expr = function_binder.BindAggregateFunction(aggr, std::move(aggr_children), nullptr,
+			// the one-argument overload of the min/max set is the plain aggregate, min(x, n) takes two
+			auto aggr = GetBuiltinAggregateFunction(context, aggr_name, {aggr_children[0]->GetReturnType()});
+			auto aggr_expr = function_binder.BindAggregateFunction(std::move(aggr), std::move(aggr_children), nullptr,
 			                                                       AggregateType::NON_DISTINCT);
 			if (aggr_expr->GetChildren().size() != 1) {
 				// min/max with collation - not supported

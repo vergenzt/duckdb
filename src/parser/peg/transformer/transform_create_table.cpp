@@ -1,4 +1,6 @@
 #include "duckdb/parser/peg/ast/column_constraint_entry.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/peg/ast/column_constraints.hpp"
 #include "duckdb/parser/peg/ast/column_elements.hpp"
 #include "duckdb/parser/peg/ast/create_table_column_element.hpp"
@@ -38,6 +40,18 @@ PEGTransformerFactory::TransformCreateStatement(PEGTransformer &transformer, con
 		secret_info.persist_type = temporary ? *temporary : SecretPersistType::DEFAULT;
 	}
 	result->info->temporary = temporary && *temporary == SecretPersistType::TEMPORARY;
+	if (result->info->temporary) {
+		// the grammar allows TEMPORARY in front of every create variation - reject it where the entry does not
+		// carry a user-supplied flag, but derives one from the table it belongs to
+		switch (result->info->type) {
+		case CatalogType::INDEX_ENTRY:
+			throw ParserException("Temporary indexes are not supported");
+		case CatalogType::TRIGGER_ENTRY:
+			throw ParserException("Temporary triggers are not supported");
+		default:
+			break;
+		}
+	}
 	return std::move(result);
 }
 
@@ -96,7 +110,7 @@ PEGTransformerFactory::TransformCreateTableAs(PEGTransformer &transformer, optio
 	result.select_statement = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(statement));
 	if (with_data && *with_data) {
 		auto limit_modifier = make_uniq<LimitModifier>();
-		limit_modifier->limit = make_uniq<ConstantExpression>(0);
+		limit_modifier->limit = ConstantExpression::Integer(0);
 		result.select_statement->node->modifiers.push_back(std::move(limit_modifier));
 	}
 	return result;
@@ -151,11 +165,12 @@ PEGTransformerFactory::TransformCreateTableColumnList(PEGTransformer &transforme
 				result.constraints.push_back(std::move(constraint));
 			}
 			for (auto constraint_type : column_result.constraint_types) {
-				if (constraint_type.second == ConstraintType::NOT_NULL) {
+				if (constraint_type.type == ConstraintType::NOT_NULL) {
 					result.constraints.push_back(make_uniq<NotNullConstraint>(LogicalIndex(col_idx)));
-				} else if (constraint_type.second == ConstraintType::UNIQUE) {
-					result.constraints.push_back(make_uniq<UniqueConstraint>(
-					    LogicalIndex(col_idx), column_result.column_definition.GetName(), constraint_type.first));
+				} else if (constraint_type.type == ConstraintType::UNIQUE) {
+					result.constraints.push_back(
+					    make_uniq<UniqueConstraint>(LogicalIndex(col_idx), column_result.column_definition.GetName(),
+					                                constraint_type.is_primary_key, constraint_type.check_mode));
 				}
 			}
 			result.columns.AddColumn(std::move(column_result.column_definition));
@@ -250,6 +265,10 @@ ConstraintColumnDefinition PEGTransformerFactory::TransformColumnDefinition(
 			} else if (cc_entry.constraint_name == "ForeignKeyConstraint") {
 				auto &fk_constraint = cc_entry.constraint->Cast<ForeignKeyConstraint>();
 				fk_constraint.fk_columns.push_back(qualified_name.Name());
+				if (!fk_constraint.pk_columns.empty() && fk_constraint.pk_columns.size() != 1) {
+					throw ParserException(
+					    "The number of referencing and referenced columns for foreign keys must be the same");
+				}
 				accumulated_constraints.constraints.push_back(std::move(cc_entry.constraint));
 			} else if (cc_entry.constraint_name == "ColumnCollation") {
 				if (has_generated) {
@@ -343,15 +362,19 @@ unique_ptr<Constraint> PEGTransformerFactory::TransformTopCheckConstraint(PEGTra
 	return std::move(check_constraint.constraint);
 }
 
-unique_ptr<Constraint> PEGTransformerFactory::TransformTopPrimaryKeyConstraint(PEGTransformer &transformer,
-                                                                               const vector<string> &column_id_list) {
-	auto result = make_uniq<UniqueConstraint>(StringsToIdentifiers(column_id_list), true);
-	return std::move(result);
+unique_ptr<Constraint>
+PEGTransformerFactory::TransformTopPrimaryKeyConstraint(PEGTransformer &transformer,
+                                                        const vector<string> &column_id_list,
+                                                        const optional<ConstraintCheckMode> &constraint_timing) {
+	auto check_mode = constraint_timing.value_or(ConstraintCheckMode::DEFAULT);
+	return make_uniq<UniqueConstraint>(StringsToIdentifiers(column_id_list), true, check_mode);
 }
 
-unique_ptr<Constraint> PEGTransformerFactory::TransformTopUniqueConstraint(PEGTransformer &transformer,
-                                                                           const vector<string> &column_id_list) {
-	return make_uniq<UniqueConstraint>(StringsToIdentifiers(column_id_list), false);
+unique_ptr<Constraint>
+PEGTransformerFactory::TransformTopUniqueConstraint(PEGTransformer &transformer, const vector<string> &column_id_list,
+                                                    const optional<ConstraintCheckMode> &constraint_timing) {
+	auto check_mode = constraint_timing.value_or(ConstraintCheckMode::DEFAULT);
+	return make_uniq<UniqueConstraint>(StringsToIdentifiers(column_id_list), false, check_mode);
 }
 
 ColumnConstraintEntry PEGTransformerFactory::TransformCheckConstraint(PEGTransformer &transformer,
@@ -449,18 +472,32 @@ string PEGTransformerFactory::TransformSetDefaultKeyAction(PEGTransformer &trans
 	throw ParserException("FOREIGN KEY constraints cannot use CASCADE, SET NULL or SET DEFAULT");
 }
 
-ColumnConstraintEntry PEGTransformerFactory::TransformPrimaryKeyConstraint(PEGTransformer &transformer) {
+ColumnConstraintEntry
+PEGTransformerFactory::TransformPrimaryKeyConstraint(PEGTransformer &transformer,
+                                                     const optional<ConstraintCheckMode> &constraint_timing) {
 	ColumnConstraintEntry entry;
 	entry.constraint_name = "PrimaryKeyConstraint";
-	entry.constraint_type_info = make_pair(true, ConstraintType::UNIQUE);
+	entry.constraint_type_info = {true, ConstraintType::UNIQUE,
+	                              constraint_timing.value_or(ConstraintCheckMode::DEFAULT)};
 	return entry;
 }
 
-ColumnConstraintEntry PEGTransformerFactory::TransformUniqueConstraint(PEGTransformer &transformer) {
+ColumnConstraintEntry
+PEGTransformerFactory::TransformUniqueConstraint(PEGTransformer &transformer,
+                                                 const optional<ConstraintCheckMode> &constraint_timing) {
 	ColumnConstraintEntry entry;
 	entry.constraint_name = "UniqueConstraint";
-	entry.constraint_type_info = make_pair(false, ConstraintType::UNIQUE);
+	entry.constraint_type_info = {false, ConstraintType::UNIQUE,
+	                              constraint_timing.value_or(ConstraintCheckMode::DEFAULT)};
 	return entry;
+}
+
+ConstraintCheckMode PEGTransformerFactory::TransformImmediateConstraint(PEGTransformer &transformer) {
+	return ConstraintCheckMode::IMMEDIATE;
+}
+
+ConstraintCheckMode PEGTransformerFactory::TransformDeferredConstraint(PEGTransformer &transformer) {
+	return ConstraintCheckMode::DEFERRED;
 }
 
 bool PEGTransformerFactory::TransformNullConstraint(PEGTransformer &transformer) {
@@ -475,14 +512,15 @@ ColumnConstraintEntry PEGTransformerFactory::TransformNotNullConstraint(PEGTrans
                                                                         const bool &child) {
 	ColumnConstraintEntry entry;
 	entry.constraint_name = "NotNullConstraint";
-	entry.constraint_type_info = make_pair(false, child ? ConstraintType::NOT_NULL : ConstraintType::INVALID);
+	entry.constraint_type_info = {false, child ? ConstraintType::NOT_NULL : ConstraintType::INVALID,
+	                              ConstraintCheckMode::DEFAULT};
 	return entry;
 }
 
 ColumnConstraintEntry PEGTransformerFactory::TransformColumnCollation(PEGTransformer &transformer,
                                                                       const vector<string> &dotted_identifier) {
 	string collation = StringUtil::Join(dotted_identifier, ".");
-	auto expr = make_uniq<ConstantExpression>(Value(collation));
+	auto expr = ConstantExpression::String(collation);
 	expr->SetAlias("collation");
 	ColumnConstraintEntry entry;
 	entry.constraint_name = "ColumnCollation";

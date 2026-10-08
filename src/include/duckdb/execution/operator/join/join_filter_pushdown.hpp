@@ -12,6 +12,7 @@
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/projection_index.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/optimizer/runtime_filter_cast.hpp"
 #include "duckdb/planner/column_binding.hpp"
 #include "duckdb/planner/expression.hpp"
 #include "duckdb/planner/table_filter.hpp"
@@ -42,9 +43,8 @@ struct JoinFilterPushdownColumn {
 	LogicalType storage_type;
 	//! Whether runtime filters can reconstruct the pushed expression, or whether only storage-domain filters are safe
 	JoinFilterPushdownMode mode = JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION;
-	//! The original type of the pushed probe expression before rewriting to the LogicalGet storage column. Only used
-	//! when the mode allows reconstruction of the probe expression for BF/PRF runtime filters.
-	LogicalType runtime_filter_type;
+	//! Casts from the raw scan value to the pushed probe expression, in evaluation order.
+	vector<RuntimeFilterCastStep> runtime_filter_casts;
 };
 
 enum class DeferredRuntimeFilterType : uint8_t { BLOOM_FILTER, PREFIX_RANGE };
@@ -119,8 +119,9 @@ public:
 	                                      optional_ptr<JoinFilterGlobalState> gstate = nullptr) const;
 
 private:
-	bool PushInFilter(const JoinFilterPushdownFilter &info, const JoinFilterPushdownColumn &column, JoinHashTable &ht,
-	                  const PhysicalOperator &op, idx_t filter_idx, ProjectionIndex filter_col_idx) const;
+	bool PushInFilter(ClientContext &context, const JoinFilterPushdownFilter &info,
+	                  const JoinFilterPushdownColumn &column, JoinHashTable &ht, const PhysicalOperator &op,
+	                  idx_t filter_idx, ProjectionIndex filter_col_idx) const;
 
 	void DeferRuntimeFilter(DeferredRuntimeFilterType type, const PhysicalOperator &op,
 	                        const JoinFilterPushdownFilter &info, const JoinFilterPushdownColumn &column,

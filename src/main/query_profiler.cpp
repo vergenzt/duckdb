@@ -9,6 +9,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/tree_renderer.hpp"
 #include "duckdb/common/tree_renderer/text_tree_renderer.hpp"
+#include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/main/client_config.hpp"
@@ -150,11 +151,23 @@ void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, b
 		return;
 	}
 	if (running) {
-		// Called while already running: this should only happen when we print optimizer output
+		// Called while already running: this happens when statement setup follows parser timing,
+		// or when we print optimizer output.
 		// D_ASSERT(PrintOptimizerOutput());
+		query_metrics.query_sql = query;
 		return;
 	}
 	Start(query);
+}
+void QueryProfiler::AddParserTime(const Profiler &parser_timer) {
+	if (!running || !IsEnabled()) {
+		return;
+	}
+	auto parser_time_ns = parser_timer.ElapsedNanos();
+	if (!parser_time_ns) {
+		return;
+	}
+	query_metrics.UpdateMetric(MetricParserTotalTime::Name, parser_time_ns);
 }
 
 bool QueryProfiler::OperatorRequiresProfiling(const PhysicalOperatorType op_type) {
@@ -191,8 +204,11 @@ bool QueryProfiler::OperatorRequiresProfiling(const PhysicalOperatorType op_type
 	case PhysicalOperatorType::LEFT_DELIM_JOIN:
 	case PhysicalOperatorType::RIGHT_DELIM_JOIN:
 	case PhysicalOperatorType::UNION:
+	case PhysicalOperatorType::CTE:
+	case PhysicalOperatorType::CTE_SCAN:
 	case PhysicalOperatorType::RECURSIVE_CTE:
 	case PhysicalOperatorType::RECURSIVE_KEY_CTE:
+	case PhysicalOperatorType::RECURSIVE_KEY_JOIN:
 	case PhysicalOperatorType::EMPTY_RESULT:
 	case PhysicalOperatorType::EXTENSION:
 		return true;
@@ -207,7 +223,11 @@ void QueryProfiler::StartExplainAnalyze() {
 
 void QueryProfiler::EndQuery() {
 	unique_lock<std::mutex> guard(lock);
-	if (!IsEnabled() || !running) {
+	if (!running) {
+		return;
+	}
+	if (!IsEnabled()) {
+		Reset();
 		return;
 	}
 
@@ -247,12 +267,16 @@ void QueryProfiler::FinalizeMetrics() {
 	FinalizeMetricsInternal();
 }
 
-void QueryProfiler::TrackBytesRead(const idx_t amount) {
-	query_metrics.UpdateBytesRead(amount);
+void QueryProfiler::TrackBytesRead(const idx_t amount, const idx_t elapsed_us) {
+	query_metrics.UpdateBytesRead(amount, elapsed_us);
 }
 
-void QueryProfiler::TrackBytesWritten(const idx_t amount) {
-	query_metrics.UpdateBytesWritten(amount);
+void QueryProfiler::TrackBytesWritten(const idx_t amount, const idx_t elapsed_us) {
+	query_metrics.UpdateBytesWritten(amount, elapsed_us);
+}
+
+void QueryProfiler::TrackBytesSpilled(const idx_t amount) {
+	query_metrics.UpdateBytesSpilled(amount);
 }
 
 void QueryProfiler::TrackTotalMemoryAllocated(const idx_t amount) {
@@ -529,8 +553,11 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 	for (auto &node : profiler.operator_metrics) {
 		auto &op = node.first.get();
 		auto entry = tree_map.find(op);
+		// all profiled operators should be registered in the tree
 		D_ASSERT(entry != tree_map.end());
-
+		if (entry == tree_map.end()) {
+			continue;
+		}
 		auto &tree_node = entry->second.get();
 		auto &info = tree_node.GetOperatorMetrics();
 		info.Merge(node.second);
@@ -557,6 +584,14 @@ void QueryProfiler::SetBlockedTime(const double &blocked_thread_time) {
 	}
 
 	query_metrics.blocked_thread_time = blocked_thread_time;
+}
+
+void QueryProfiler::SetStreamingPeakBufferSize(idx_t peak_bytes) {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !running) {
+		return;
+	}
+	query_metrics.system_peak_streaming_buffer_size = peak_bytes;
 }
 
 string QueryProfiler::DrawPadded(const string &str, idx_t width) {
@@ -856,6 +891,7 @@ static LegacyCumulative LegacyOperatorToResultTree(const GatheredMetrics &info, 
 		result.AddValue("extra_info", it_extra->second);
 	}
 	result.AddValue("system_peak_buffer_memory", Value::UBIGINT(0));
+	result.AddValue("system_peak_streaming_buffer_size", Value::UBIGINT(0));
 	result.AddValue("system_peak_temp_dir_size", Value::UBIGINT(0));
 
 	LegacyCumulative cumulative;
@@ -907,9 +943,15 @@ unique_ptr<QueryProfileResult> QueryProfiler::ToLegacyResultTree() const {
 
 	emit("total_memory_allocated", "system.total_memory_allocated");
 	emit("total_bytes_written", "io.total_bytes_written");
+	emit("total_write_operations", "io.total_write_operations");
 	emit("total_bytes_read", "io.total_bytes_read");
+	emit("total_read_operations", "io.total_read_operations");
+	emit("total_write_time", "io.total_write_time");
+	emit("total_read_time", "io.total_read_time");
 	emit("system_peak_temp_dir_size", "system.peak_temp_dir_size");
+	emit("total_bytes_spilled", "system.total_bytes_spilled");
 	emit("system_peak_buffer_memory", "system.peak_buffer_memory");
+	emit("system_peak_streaming_buffer_size", "system.peak_streaming_buffer_size");
 
 	// rows_returned = root operator's elements_returned (rows sent to client)
 	{
@@ -1004,6 +1046,13 @@ unique_ptr<ProfilingNode> QueryProfiler::CreateTree(const PhysicalOperator &root
 	info.SetExtraInfo(std::move(params));
 
 	tree_map.insert(make_pair(reference<const PhysicalOperator>(root_p), reference<ProfilingNode>(*node)));
+	if (root_p.type == PhysicalOperatorType::CTE_SCAN) {
+		auto &cte_scan = root_p.Cast<PhysicalColumnDataScan>();
+		if (cte_scan.cte_source) {
+			tree_map.insert(
+			    make_pair(reference<const PhysicalOperator>(*cte_scan.cte_source), reference<ProfilingNode>(*node)));
+		}
+	}
 	auto children = root_p.GetChildren();
 	for (auto &child : children) {
 		auto child_node = CreateTree(child.get(), depth + 1);
@@ -1052,6 +1101,31 @@ static void MergeOperatorMeasurements(ProfilingNode &root, OperatorMetrics &resu
 	}
 }
 
+static double SumSubtreeTime(ProfilingNode &node) {
+	auto result = node.GetOperatorMetrics().time;
+	for (idx_t i = 0; i < node.GetChildCount(); i++) {
+		result += SumSubtreeTime(*node.GetChild(i));
+	}
+	return result;
+}
+
+//! Drop the operators of a secure view, keeping only the metrics that describe the view as a whole: the time spent
+//! in it (accumulated over its operators) and the rows it returned, which are observable regardless. The remaining
+//! metrics of the operators inside the view are discarded rather than accumulated, because their sum describes the
+//! contents of the view - how many rows it processed internally, how much of the table it scanned.
+//! This runs before any profiling output is produced, so every consumer (EXPLAIN ANALYZE in any format, the
+//! profiling output, the query profile result) sees the collapsed tree.
+static void CollapseSecureViews(ProfilingNode &node) {
+	if (node.GetOperatorMetrics().operator_type == PhysicalOperatorType::SECURE_VIEW) {
+		node.GetOperatorMetrics().time = SumSubtreeTime(node);
+		node.children.clear();
+		return;
+	}
+	for (idx_t i = 0; i < node.GetChildCount(); i++) {
+		CollapseSecureViews(*node.GetChild(i));
+	}
+}
+
 void QueryProfiler::FinalizeMetricsInternal() {
 	if (metrics_finalized || !IsEnabled() || !metrics) {
 		return;
@@ -1060,6 +1134,10 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		query_metrics.latency_timer->EndTimer();
 	}
 	if (root) {
+		// collapse secure views first - the query-wide totals are sums over the operator tree, so leaving the
+		// operators of the view in would expose how much of the table behind it was scanned. The time of the view
+		// is accumulated onto its boundary node, so the total CPU time still covers the whole query.
+		CollapseSecureViews(*root);
 		OperatorMetrics cumulative_metrics;
 		MergeOperatorMeasurements(*root, cumulative_metrics);
 		metrics->SetMetric<MetricQueryCPUTime>(cumulative_metrics.time);

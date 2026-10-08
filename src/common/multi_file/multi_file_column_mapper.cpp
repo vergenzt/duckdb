@@ -4,11 +4,13 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/expression_binder/constant_binder.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
-#include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/filter/list.hpp"
 #include "duckdb/function/scalar/struct_functions.hpp"
 #include "duckdb/function/scalar/struct_utils.hpp"
@@ -84,7 +86,7 @@ struct ColumnMapper {
 	virtual ~ColumnMapper() = default;
 	virtual unique_ptr<ColumnMapper> Create(const vector<MultiFileColumnDefinition> &columns) const = 0;
 	virtual MultiFileLocalIndex Find(const MultiFileColumnDefinition &column) const = 0;
-	virtual unique_ptr<Expression> GetDefaultExpression(const MultiFileColumnDefinition &column,
+	virtual unique_ptr<Expression> GetDefaultExpression(ClientContext &context, const MultiFileColumnDefinition &column,
 	                                                    bool is_root) const = 0;
 	virtual idx_t MapCount() const = 0;
 };
@@ -113,21 +115,27 @@ struct FieldIdMapper : public ColumnMapper {
 		}
 		return entry->second;
 	}
-	static unique_ptr<Expression> GetDefault(const MultiFileColumnDefinition &column) {
+	static unique_ptr<Expression> GetDefault(ClientContext &context, const MultiFileColumnDefinition &column) {
 		auto &default_val = column.default_expression;
 		if (!default_val) {
 			throw InternalException("No default expression in FieldId Map");
 		}
-		if (default_val->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
-			throw NotImplementedException("Default expression that isn't constant is not supported yet");
+		auto binder = Binder::CreateBinder(context);
+		binder->SetCanContainNulls(true);
+		ConstantBinder constant_binder(*binder, context, "default value");
+		auto expr = default_val->Copy();
+		LogicalType target_type = column.type;
+		auto bound = constant_binder.Bind(expr, &target_type);
+		if (!bound->IsFoldable()) {
+			return bound;
 		}
-		auto &constant_expr = default_val->Cast<ConstantExpression>();
-		// return only the expression
-		return make_uniq<BoundConstantExpression>(constant_expr.GetValue());
+		// a constant default is kept as a constant so filters on the missing column can be evaluated up front
+		return make_uniq<BoundConstantExpression>(ExpressionExecutor::EvaluateScalar(context, *bound, true));
 	}
 
-	unique_ptr<Expression> GetDefaultExpression(const MultiFileColumnDefinition &column, bool is_root) const override {
-		return GetDefault(column);
+	unique_ptr<Expression> GetDefaultExpression(ClientContext &context, const MultiFileColumnDefinition &column,
+	                                            bool is_root) const override {
+		return GetDefault(context, column);
 	}
 	idx_t MapCount() const override {
 		return field_id_map.size();
@@ -155,10 +163,11 @@ struct NameMapper : public ColumnMapper {
 		}
 		return entry->second;
 	}
-	unique_ptr<Expression> GetDefaultExpression(const MultiFileColumnDefinition &column, bool is_root) const override {
+	unique_ptr<Expression> GetDefaultExpression(ClientContext &context, const MultiFileColumnDefinition &column,
+	                                            bool is_root) const override {
 		if (column.default_expression) {
 			// we have an explicit default - return it
-			return FieldIdMapper::GetDefault(column);
+			return FieldIdMapper::GetDefault(context, column);
 		}
 		// no explicit default and no match
 		if (is_root) {
@@ -554,7 +563,7 @@ static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDe
 	auto local_idx = mapper.Find(global_column);
 	if (!local_idx.IsValid()) {
 		// entry not present in map, use default value
-		result.default_value = mapper.GetDefaultExpression(global_column, is_root);
+		result.default_value = mapper.GetDefaultExpression(context, global_column, is_root);
 		return result;
 	}
 	// the field exists! get the local column
@@ -884,10 +893,17 @@ static unique_ptr<Expression> CreateStructExtractExpression(unique_ptr<Expressio
 }
 
 static bool TryCastConstant(Value &constant, const LogicalType &target_type) {
-	if (!StatisticsPropagator::CanPropagateCast(constant.type(), target_type)) {
+	// this filter replaces the global one in the reader, so a constant that does not survive the cast
+	// exactly would silently change which rows match
+	if (!BoundCastExpression::CastIsInvertible(constant.type(), target_type)) {
 		return false;
 	}
-	return constant.DefaultTryCastAs(target_type);
+	auto cast = constant.DefaultTryCastAs(target_type);
+	if (!cast) {
+		return false;
+	}
+	constant = std::move(*cast);
+	return true;
 }
 
 struct RewrittenMappedExpression {
@@ -1107,7 +1123,6 @@ MultiFileColumnMapper::CreateFilters(map<MultiFileGlobalIndex, reference<TableFi
 	auto result = make_uniq<TableFilterSet>();
 	map<idx_t, MultiFileGlobalIndex> local_to_global;
 
-	idx_t local_offset = 0;
 	for (auto &it : filters) {
 		auto &global_index = it.first;
 		auto &global_filter = it.second.get().Cast<ExpressionFilter>();
@@ -1118,10 +1133,8 @@ MultiFileColumnMapper::CreateFilters(map<MultiFileGlobalIndex, reference<TableFi
 			    "Error in 'EvaluateConstantFilters', this filter should not end up in CreateFilters!");
 		}
 		auto &map_entry = local_it->second;
-		auto local_id = MultiFileLocalIndex(map_entry.mapping.index.GetIndex() - local_offset);
-		auto filter_idx = reader.column_indexes[local_id].GetPrimaryIndex();
+		auto local_id = MultiFileLocalIndex(map_entry.mapping.index.GetIndex());
 		auto &local_type = map_entry.local_type;
-		auto &global_type = map_entry.global_type;
 
 		unique_ptr<TableFilter> local_filter;
 		switch (map_entry.filter_conversion) {
@@ -1148,17 +1161,18 @@ MultiFileColumnMapper::CreateFilters(map<MultiFileGlobalIndex, reference<TableFi
 			// we need to set the index of the references inside the expression to 0
 			auto &expr = reader_data.expressions[global_index.GetIndex()];
 			auto unique_ref_count = StartIndexAtZero(expr);
+			auto expression_type = expr->GetReturnType();
 
 			vector<ColumnIndex> expression_column_indexes;
 			for (idx_t i = 0; i < unique_ref_count; i++) {
 				auto index = local_id + i;
 				expression_column_indexes.push_back(reader.column_indexes[index]);
 			}
-			reader.expression_map.emplace(filter_idx,
+			reader.expression_map.emplace(ProjectionIndex(local_id.GetIndex()),
 			                              BaseFileReaderExpression(std::move(expr), expression_column_indexes));
 
 			// reset the expression - since we are evaluating it in the reader we can just reference it
-			expr = make_uniq<BoundReferenceExpression>(global_type, local_id);
+			expr = make_uniq<BoundReferenceExpression>(std::move(expression_type), local_id);
 		}
 		local_to_global.emplace(local_id, global_index);
 	}

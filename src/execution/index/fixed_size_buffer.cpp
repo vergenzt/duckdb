@@ -1,5 +1,6 @@
 #include "duckdb/execution/index/fixed_size_buffer.hpp"
 
+#include "duckdb/common/typedefs.hpp"
 #include "duckdb/storage/block_manager.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
@@ -45,6 +46,15 @@ FixedSizeBuffer::FixedSizeBuffer(BlockManager &block_manager, MemoryTag memory_t
 	// Zero-initialize the buffer as it might get serialized to storage.
 	auto block_size = block_manager.GetBlockSize();
 	memset(buffer_handle.GetDataMutable(), 0, block_size);
+}
+
+FixedSizeBuffer::FixedSizeBuffer(BlockManager &block_manager, const idx_t segment_count, const idx_t allocation_size,
+                                 shared_ptr<BlockHandle> block_handle_p)
+    : block_manager(block_manager), readers(0), segment_count(segment_count), allocation_size(allocation_size),
+      dirty(false), vacuum(false), loaded(false), block_pointer(), block_handle(std::move(block_handle_p)) {
+	D_ASSERT(block_handle);
+	buffer_handle = block_manager.buffer_manager.Pin(block_handle);
+	D_ASSERT(buffer_handle.IsValid());
 }
 
 FixedSizeBuffer::FixedSizeBuffer(BlockManager &block_manager, const idx_t segment_count, const idx_t allocation_size,
@@ -156,9 +166,12 @@ void FixedSizeBuffer::LoadFromDisk() {
 	block_handle = std::move(new_block_handle);
 }
 
-uint32_t FixedSizeBuffer::GetOffset(const idx_t bitmask_count, const idx_t available_segments) {
+uint32_t FixedSizeBuffer::AllocateSegment(const idx_t bitmask_count, const idx_t available_segments) {
+	D_ASSERT(segment_count < available_segments);
+
 	// Get a handle to the buffer's validity mask (offset 0).
 	SegmentHandle handle(*this, 0);
+	handle.MarkModified();
 	const auto bitmask_ptr = handle.GetPtr<validity_t>();
 
 	ValidityMask mask(bitmask_ptr, available_segments);
@@ -166,8 +179,10 @@ uint32_t FixedSizeBuffer::GetOffset(const idx_t bitmask_count, const idx_t avail
 
 	// fills up a buffer sequentially before searching for free bits
 	if (mask.RowIsValid(segment_count)) {
-		mask.SetInvalid(segment_count);
-		return UnsafeNumericCast<uint32_t>(segment_count);
+		const auto offset = segment_count;
+		mask.SetInvalid(offset);
+		segment_count++;
+		return UnsafeNumericCast<uint32_t>(offset);
 	}
 
 	for (idx_t entry_idx = 0; entry_idx < bitmask_count; entry_idx++) {
@@ -197,13 +212,29 @@ uint32_t FixedSizeBuffer::GetOffset(const idx_t bitmask_count, const idx_t avail
 		}
 		D_ASSERT(entry);
 
-		auto prev_bits = entry_idx * sizeof(validity_t) * 8;
-		D_ASSERT(mask.RowIsValid(prev_bits + first_valid_bit));
-		mask.SetInvalid(prev_bits + first_valid_bit);
-		return UnsafeNumericCast<uint32_t>(prev_bits + first_valid_bit);
+		const auto offset = entry_idx * sizeof(validity_t) * 8 + first_valid_bit;
+		D_ASSERT(mask.RowIsValid(offset));
+		mask.SetInvalid(offset);
+		segment_count++;
+		return UnsafeNumericCast<uint32_t>(offset);
 	}
 
 	throw InternalException("Invalid bitmask for FixedSizeAllocator");
+}
+
+void FixedSizeBuffer::FreeSegment(const idx_t offset, const idx_t available_segments) {
+	D_ASSERT(segment_count > 0);
+	D_ASSERT(offset < available_segments);
+
+	SegmentHandle handle(*this, 0);
+	handle.MarkModified();
+	const auto bitmask_ptr = handle.GetPtr<validity_t>();
+
+	ValidityMask mask(bitmask_ptr, available_segments);
+	D_ASSERT(!mask.RowIsValid(offset));
+	mask.SetValid(offset);
+
+	segment_count--;
 }
 
 void FixedSizeBuffer::SetAllocationSize(const idx_t available_segments, const idx_t segment_size,

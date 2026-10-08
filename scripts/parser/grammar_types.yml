@@ -34,6 +34,9 @@
 # transformer generator should treat only `identifier` and `reserved_identifier`
 # entries as direct IdentifierParseResult-producing rules.
 #
+# additional_transform_result_types: result types used by transformer infrastructure
+# rather than as the declared return type of a grammar rule.
+#
 # packrat_memoized_rules: named grammar rules that should use packrat
 # memoization in MatchParseResult. Keep this selective because cache lookup and
 # parse-result sharing are only worthwhile for rules with repeated backtracking.
@@ -41,6 +44,10 @@
 # ---------------------------------------------------------------------------
 # unique_ptr<T> categories
 # ---------------------------------------------------------------------------
+
+additional_transform_result_types:
+  - "unique_ptr<TransformResultValue>"
+  - "vector<Identifier>"
 
 SQLStatementList:
   type: "vector<unique_ptr<SQLStatement>>"
@@ -102,6 +109,14 @@ SQLStatement:
     - UseStatement
     - VacuumStatement
     - PragmaAssignOrFunction
+    - ExternalResourceStatement
+    - CreateExternalResourceStmt
+    - RegisterExternalResourceStmt
+    - DestroyExternalResourceStmt
+    - ShowExternalResourcesStmt
+    - ExtensionRepositoryStatement
+    - CreateExtensionRepositoryStmt
+    - DropExtensionRepositoryStmt
 
 SelectStatement:
   type: "unique_ptr<SelectStatement>"
@@ -127,6 +142,7 @@ SetStatement:
   by_value: true
   rules:
     - SetAssignmentOrTimeZone
+    - SetSchema
     - SetTimeZone
     - StandardAssignment
 
@@ -134,10 +150,12 @@ QueryNode:
   type: "unique_ptr<QueryNode>"
   by_value: true
   rules:
-    - ShowSelect
+    - ShowDeprecatedSelect
+    - DescribeSelect
     - ShowTables
     - ShowAllTables
-    - ShowQualifiedName
+    - ShowByName
+    - DescribeByName
 
 SelectNode:
   type: "unique_ptr<SelectNode>"
@@ -206,6 +224,7 @@ AlterTableInfo:
   rules:
     - AlterTableOptions
     - AddColumn
+    - DropConstraint
     - DropColumn
     - SetPartitionedBy
     - ResetPartitionedBy
@@ -525,12 +544,30 @@ Expression:
     - IndexElement
     - RelOptionArgumentOpt
     - ExpressionAlias
+    - MeasuresElement
+    - PatternClause
+    - RowPattern
+    - RowPatternAlternative
+    - RowPatternTerm
+    - RowPatternFactor
+    - RowPatternPrimary
+    - RowPatternPermute
+    - RowPatternAnchor
+    - PatternStart
+    - PatternEnd
+    - RowPatternGroup
+    - RowPatternEmpty
+    - RowPatternExclusion
+    - RowPatternLabel
+    - MeasureSemanticsExpression
+    - DefineElement
 
 ColumnRefExpression:
   type: "unique_ptr<ColumnRefExpression>"
   by_value: true
   rules:
     - NestedColumnName
+    - NestedSchemaTableColumnName
     - CatalogReservedSchemaTableColumnName
     - SchemaReservedTableColumnName
     - TableReservedColumnName
@@ -544,6 +581,15 @@ TableRef:
     - JoinOrPivot
     - JoinClause
     - RegularJoinClause
+    - NearestJoinClause
+    - NearestJoinAliased
+    - NearestJoinBare
+    - NearestBareTableRef
+    - NearestValuesRef
+    - NearestTableFunction
+    - NearestTableSubquery
+    - NearestBaseTableRef
+    - NearestParensTableRef
     - JoinByClause
     - JoinWithoutOnClause
     - TableUnpivotClause
@@ -566,6 +612,8 @@ TableRef:
     - CTEBody
     - CTESelectBody
     - CTEDMLBody
+    - TableMatchRecognizeClause
+    - MatchRecognizeBody
 
 BaseTableRef:
   type: "unique_ptr<BaseTableRef>"
@@ -575,6 +623,7 @@ BaseTableRef:
     - UnqualifiedBaseTableName
     - SchemaReservedTable
     - CatalogReservedSchemaTable
+    - QualifiedTableName
     - TargetOptAlias
     - InsertTarget
 
@@ -617,6 +666,8 @@ ExpressionList:
     - SetAssignment
     - VariableList
     - UsingKey
+    - MeasuresClause
+    - DefineClause
 
 FunctionArgumentList:
   type: "vector<FunctionArgument>"
@@ -685,19 +736,25 @@ StringList:
     - DottedIdentifier
     - ColumnAliases
     - TriggerColumnList
+    - RepositoryPublicKey
     - StarSymbolColumnList
     - StarQualifierList
     - PivotGroupByList
     - UnpivotHeader
     - UnpivotHeaderSingle
     - UnpivotHeaderList
+    - OptionalParensNameList
+    - ParenthesizedNameList
+    - BareNameList
 
 GenericCopyOptionList:
   type: "vector<GenericCopyOption>"
   by_value: false
   rules:
     - AttachOptions
+    - ExternalResourceCreationOptions
     - GenericCopyOptionList
+    - CopyGenericOptionList
     - CopyOptions
     - CopyOptionList
     - SpecializedOptionList
@@ -868,7 +925,11 @@ GenericCopyOption:
   by_value: false
   rules:
     - GenericCopyOption
+    - CopyGenericOption
+    - OrderByCopyOption
+    - PartitionedByCopyOption
     - SpecializedOption
+    - SpecializedOptionTail
     - SingleOption
     - EncodingOption
     - ForceQuoteOption
@@ -884,6 +945,15 @@ GenericCopyOption:
     - OidsOption
     - CsvOption
     - HeaderOption
+
+PartitionByColumnList:
+  type: "vector<string>"
+  by_value: false
+  rules:
+    - PartitionByColumnList
+    - StarPartitionByColumnList
+    - ParenthesizedPartitionByColumnList
+    - SinglePartitionByColumnList
 
 GenericCopyOptionValue:
   type: "GenericCopyOptionValue"
@@ -984,11 +1054,13 @@ String:
     - ColumnNameKeyword
     - FuncNameKeyword
     - TypeNameKeyword
+    - TypeFuncKeyword
     - IndexName
     - Identifier
     - ExportSource
     - ReservedKeyword
     - VersionNumber
+    - RepositoryPrefix
     - LikeVariations
     - LikeToken
     - ILikeToken
@@ -1059,6 +1131,14 @@ String:
     - DoubleType
     - UpdateSetColumnTarget
 
+ConstraintCheckMode:
+  type: "ConstraintCheckMode"
+  by_value: false
+  rules:
+    - ConstraintTiming
+    - ImmediateConstraint
+    - DeferredConstraint
+
 Bool:
   type: "bool"
   by_value: false
@@ -1093,6 +1173,9 @@ Bool:
     - Lateral
     - WithOrdinality
     - Asof
+    - ApproxOrExact
+    - NearestApprox
+    - NearestExact
     - Materialized
     - SampleUnit
     - DropBehavior
@@ -1115,6 +1198,8 @@ Bool:
     - CheckpointForce
     - IfNotExists
     - OrReplace
+    - InstallAndLoad
+    - ShowAllModifier
     - FunctionTypeMacro
     - FunctionTypeMacroKeyword
     - FunctionTypeFunction
@@ -1123,6 +1208,7 @@ Bool:
     - FunctionKeyword
     - DeallocatePrepare
     - CreateRecursive
+    - CreateSecure
     - WithOrWithoutOids
     - WithOids
     - WithoutOids
@@ -1142,6 +1228,7 @@ Int64:
   by_value: false
   rules:
     - ArrayBounds
+    - ArrayKeywordWithBounds
     - SquareBracketsArray
     - ArrayKeyword
 
@@ -1305,8 +1392,8 @@ ShowType:
   type: "ShowType"
   by_value: false
   rules:
-    - ShowOrDescribeOrSummarize
     - ShowOrDescribe
+    - DescribeOrSummarize
     - Summarize
     - SummarizeRule
     - ShowRule
@@ -1339,6 +1426,9 @@ OrderTypeValue:
   rules:
     - DescendingOrder
     - AscendingOrder
+    - DistanceOrSimilarity
+    - NearestDistance
+    - NearestSimilarity
 
 OrderByNullTypeValue:
   type: "OrderByNullType"
@@ -1447,6 +1537,9 @@ DescribeTarget:
     - DescribeTarget
     - DescribeBaseTableName
     - DescribeStringLiteral
+    - ShowTarget
+    - ShowDeprecatedQualifiedTableName
+    - ShowSettingName
 
 OnConflictExpressionTarget:
   type: "OnConflictExpressionTarget"
@@ -1758,6 +1851,9 @@ packrat_memoized_rules:
 # ---------------------------------------------------------------------------
 
 excluded_rules:
+  # Suggestion-only: exists so autocomplete offers the special SHOW forms as keywords; parsing of e.g.
+  # "SHOW databases" resolves through ShowSettingName (the identifier), which the transformer special-cases.
+  - ShowSpecialForm
   - PivotStatement
   - UnpivotStatement
   - Program
@@ -1805,3 +1901,70 @@ excluded_rules:
   # expression.gram rules kept manual during incremental transformer generation migration
   - OverClause
   - PrefixExpression
+
+MatchRecognizeClauseEntry:
+  type: "MatchRecognizeClause"
+  by_value: true
+  rules:
+    - MatchRecognizeClause
+    - MRPartition
+    - MROrderBy
+    - MRMeasures
+    - MRRows
+    - MRSkip
+    - MRPattern
+    - MRSubset
+    - MRDefineAuto
+    - MRDefine
+MatchRecognizeSubset:
+  type: "MatchRecognizeSubset"
+  by_value: true
+  rules:
+    - SubsetElement
+MatchRecognizeSubsetList:
+  type: "vector<MatchRecognizeSubset>"
+  by_value: true
+  rules:
+    - SubsetClause
+MeasureSemantics:
+  type: "bool"
+  rules:
+    - MeasureSemantics
+    - RunningSemantics
+    - FinalSemantics
+    - QuantifierReluctant
+MatchRecognizeRows:
+  type: "MatchRecognizeRows"
+  rules:
+    - RowsPerMatch
+    - OneRowPerMatch
+    - AllRowsPerMatch
+    - AllRowsEmptyMatches
+    - ShowEmptyMatches
+    - OmitEmptyMatches
+    - WithUnmatchedRows
+MatchRecognizeAfterMatchClause:
+  type: "MatchRecognizeAfterMatchClause"
+  by_value: true
+  rules:
+    - AfterMatchSkip
+    - AfterMatchSkipTarget
+    - SkipToNextRow
+    - SkipPastLastRow
+    - SkipToFirstVar
+    - SkipToLastVar
+    - SkipToVar
+MatchRecognizeQuantifier:
+  type: "MatchRecognizeQuantifier"
+  rules:
+    - RowPatternQuantifier
+    - RowPatternQuantifierKind
+    - QuantifierStar
+    - QuantifierPlus
+    - QuantifierOptional
+    - QuantifierRange
+    - QuantifierBounds
+    - QuantifierMinMax
+    - QuantifierMin
+    - QuantifierMax
+    - QuantifierExact

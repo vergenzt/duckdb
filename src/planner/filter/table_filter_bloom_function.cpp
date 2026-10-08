@@ -253,6 +253,7 @@ static FilterPropagateResult TemplatedBloomFilterPrune(const BloomFilter &bf, co
 
 ScalarFunction BloomFilterScalarFun::GetFunction(const LogicalType &input_type) {
 	ScalarFunction func(NAME, {input_type}, LogicalType::BOOLEAN, nullptr, TableFilterFunctions::Bind);
+	func.GetSignature().GetParameter(0).SetName("col");
 	func.SetInitStateCallback(BloomFilterInitLocalState);
 	func.SetSelectCallback(BloomFilterSelect);
 	func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
@@ -272,6 +273,9 @@ FilterPropagateResult BloomFilterScalarFun::FilterPrune(const FunctionStatistics
 	}
 	auto &data = input.bind_data->Cast<BloomFilterFunctionData>();
 	if (!data.filter || !data.filter->IsInitialized()) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	if (!data.filters_null_values) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
 	auto column_stats = input.ChildStats(0);

@@ -2,6 +2,7 @@
 #include "dbgen/dbgen_gunk.hpp"
 #include "tpch_constants.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
@@ -161,7 +162,7 @@ struct tpch_append_information {
 			return;
 		}
 		FlushChunk();
-		TransactionData transaction_data(0, 0);
+		auto transaction_data = TransactionData::Unversioned();
 		auto &row_collection = *optimistic_collection->collection;
 		row_collection.FinalizeAppend(transaction_data, append_state);
 		finalized = true;
@@ -778,10 +779,40 @@ const LogicalType LineitemInfo::Types[] = {
     LogicalType(LogicalTypeId::VARCHAR)};
 
 template <class T>
+static void ValidateTPCHTableSchema(const TableCatalogEntry &table, const string &table_name) {
+	const auto &columns = table.GetColumns();
+
+	if (columns.LogicalColumnCount() != T::ColumnCount) {
+		throw InvalidInputException(
+		    "TPC-H table \"%s\" has an incompatible schema: expected %llu columns but found %llu", table_name,
+		    (unsigned long long)T::ColumnCount, (unsigned long long)columns.LogicalColumnCount());
+	}
+
+	for (idx_t i = 0; i < T::ColumnCount; i++) {
+		const auto &column = columns.GetColumn(LogicalIndex(i));
+
+		if (column.Name() != Identifier(T::Columns[i])) {
+			throw InvalidInputException(
+			    "TPC-H table \"%s\" has an incompatible schema: expected column \"%s\" at position %llu but found %s",
+			    table_name, T::Columns[i], (unsigned long long)i, column.Name());
+		}
+
+		if (column.Type() != T::Types[i]) {
+			throw InvalidInputException(
+			    "TPC-H table \"%s\" has an incompatible schema: column \"%s\" has type %s but expected %s",
+			    table_name, T::Columns[i], column.Type().ToString(), T::Types[i].ToString());
+		}
+	}
+}
+
+template <class T>
 static void CreateTPCHTable(ClientContext &context, const Identifier &catalog_name, const Identifier &schema,
                             string suffix) {
+	auto table_name = string(T::Name) + suffix;
+	auto qualified_name = QualifiedName(catalog_name, schema, Identifier(table_name));
+
 	auto info = make_uniq<CreateTableInfo>();
-	info->SetQualifiedName(QualifiedName(catalog_name, schema, Identifier(T::Name + suffix)));
+	info->SetQualifiedName(qualified_name);
 	info->on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 	info->temporary = false;
 	for (idx_t i = 0; i < T::ColumnCount; i++) {
@@ -790,6 +821,10 @@ static void CreateTPCHTable(ClientContext &context, const Identifier &catalog_na
 	}
 	auto &catalog = Catalog::GetCatalog(context, catalog_name);
 	catalog.CreateTable(context, std::move(info));
+
+	// Validate both newly created and pre-existing TPC-H tables before appending.
+	auto &table = catalog.GetEntry<TableCatalogEntry>(context, qualified_name);
+	ValidateTPCHTableSchema<T>(table, table_name);
 }
 
 void DBGenWrapper::CreateTPCHSchema(ClientContext &context, const Identifier &catalog, const Identifier &schema,
@@ -1083,9 +1118,24 @@ public:
 	TPCHDBGenGenerator(ClientContext &context, double flt_scale, const Identifier &catalog_name,
 	                   const Identifier &schema, string suffix, int children, int current_step)
 	    : context(context), flt_scale(flt_scale), children(children), current_step(current_step) {
+		// NaN compares false against every scale factor check, and reaches an out-of-range cast below
+		if (Value::IsNan(flt_scale)) {
+			throw InvalidInputException("DBGen requires a valid scale factor.");
+		}
+
+		if (flt_scale <= 0) {
+			Finish();
+			return;
+		}
+
+		if (flt_scale > MAX_SCALE) {
+			throw InvalidInputException("DBGen does not support a scale factor exceeding %d.",
+			                            static_cast<int>(MAX_SCALE));
+		}
+
 		InitializeBaseContext();
 
-		if (flt_scale == 0 || current_step >= children) {
+		if (current_step >= children) {
 			Finish();
 			return;
 		}
@@ -1446,6 +1496,25 @@ string DBGenWrapper::GetQuery(int query) {
 		throw SyntaxException("Out of range TPC-H query number %d", query);
 	}
 	return TPCH_QUERIES[query - 1];
+}
+
+//! The stored Q11 carries the FRACTION substitution parameter for SF 1
+static constexpr const char *TPCH_Q11_SF1_FRACTION = "0.0001000000";
+
+string DBGenWrapper::GetQuery(int query, double sf) {
+	if (Value::IsNan(sf) || sf <= 0 || sf > MAX_SCALE) {
+		throw InvalidInputException("TPC-H queries require a scale factor between 0 and %d",
+		                            static_cast<int>(MAX_SCALE));
+	}
+	auto result = GetQuery(query);
+	if (query != 11) {
+		return result;
+	}
+	// Q11 selects the parts whose stock value exceeds FRACTION of the total, where qgen sets FRACTION = 0.0001 / SF
+	auto fraction = StringUtil::Format("%.10f", 0.0001 / sf);
+	auto pos = result.find(TPCH_Q11_SF1_FRACTION);
+	D_ASSERT(pos != string::npos);
+	return result.replace(pos, strlen(TPCH_Q11_SF1_FRACTION), fraction);
 }
 
 string DBGenWrapper::GetAnswer(double sf, int query) {
