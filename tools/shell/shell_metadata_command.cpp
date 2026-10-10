@@ -493,6 +493,13 @@ MetadataResult ReadFromFile(ShellState &state, const vector<string> &args) {
 	return MetadataResult::SUCCESS;
 }
 
+MetadataResult ReadFromFileRelative(ShellState &state, const vector<string> &args) {
+	if (!state.ReadFromFileRelative(args[1])) {
+		return MetadataResult::FAIL;
+	}
+	return MetadataResult::SUCCESS;
+}
+
 MetadataResult DisplaySchemas(ShellState &state, const vector<string> &args) {
 	if (!state.DisplaySchemas(args)) {
 		return MetadataResult::FAIL;
@@ -1004,6 +1011,8 @@ static const MetadataCommand metadata_commands[] = {
     {"read", 2, ReadFromFile, "FILE", "Read input from FILE", 3, ""},
     {"read_line_version", 2, SetReadLineVersion, "linenoise|fallback",
      "Sets the library used for processing interactive input", 0, ""},
+    {"read_relative", 2, ReadFromFileRelative, "FILE", "Read input from FILE, relative to the current script's directory",
+     0, ""},
 #ifdef HAVE_LINENOISE
     {"render_completion", 2, ToggleCompletionRendering, "on|off",
      "Toggle displaying of completion prompts in the shell on/off", 0, ""},

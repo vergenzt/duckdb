@@ -2124,13 +2124,29 @@ bool ShellState::ReadFromFile(const string &file) {
 		PrintF(PrintOutput::STDERR, "Error: cannot open \"%s\"\n", file.c_str());
 		rc = 1;
 	} else {
+		executing_files.push_back(file);
 		rc = ProcessInput(InputMode::FILE);
+		executing_files.pop_back();
 		fclose(in);
 	}
 	active_read_files.erase(canonical_file);
 	in = inSaved;
 	lineno = savedLineno;
 	return rc == 0;
+}
+
+bool ShellState::ReadFromFileRelative(const string &file) {
+	duckdb::LocalFileSystem lfs;
+	if (executing_files.empty() || lfs.IsPathAbsolute(file)) {
+		// no enclosing script (interactive / stdin) or absolute path: resolve relative to cwd
+		return ReadFromFile(file);
+	}
+	auto &parent = executing_files.back();
+	auto sep = parent.find_last_of("/\\");
+	if (sep == string::npos) {
+		return ReadFromFile(file);
+	}
+	return ReadFromFile(lfs.JoinPath(parent.substr(0, sep), file));
 }
 
 bool ShellState::DisplaySchemas(const vector<string> &args) {
@@ -3218,7 +3234,9 @@ bool ShellState::ProcessFile(const string &file, InputMode input_mode, bool defa
 
 	in = fopen(file.c_str(), "rb");
 	if (in) {
+		executing_files.push_back(file);
 		rc = ProcessInput(input_mode);
+		executing_files.pop_back();
 		fclose(in);
 	} else if (input_mode != InputMode::DUCKDB_RC || !default_duckdb_rc) {
 		// we always error in regular file reading mode

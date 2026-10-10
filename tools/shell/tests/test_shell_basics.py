@@ -395,6 +395,34 @@ def test_recursive_read(shell, tmp_path):
     result = ShellTest(shell).statement(f".read {sql_file.as_posix()}").run()
     result.check_stderr("recursive .read")
 
+def test_read_relative(shell, tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "inner.sql").write_text(".read_relative leaf.sql")
+    (tmp_path / "sub" / "leaf.sql").write_text("select 42 as answer;")
+    outer = tmp_path / "outer.sql"
+    outer.write_text(".read_relative sub/inner.sql")
+    result = ShellTest(shell, ['-f', outer.as_posix()]).run()
+    result.check_stdout("42")
+
+def test_read_relative_from_read(shell, tmp_path):
+    (tmp_path / "leaf.sql").write_text("select 42 as answer;")
+    outer = tmp_path / "outer.sql"
+    outer.write_text(".read_relative leaf.sql")
+    result = ShellTest(shell).statement(f".read {outer.as_posix()}").run()
+    result.check_stdout("42")
+
+def test_read_relative_interactive_uses_cwd(shell, tmp_path, monkeypatch):
+    (tmp_path / "leaf.sql").write_text("select 42 as answer;")
+    monkeypatch.chdir(tmp_path)
+    result = ShellTest(shell).statement(".read_relative leaf.sql").run()
+    result.check_stdout("42")
+
+def test_read_relative_recursive(shell, tmp_path):
+    sql_file = tmp_path / "recursive_read.sql"
+    sql_file.write_text(".read_relative recursive_read.sql")
+    result = ShellTest(shell, ['-f', sql_file.as_posix()]).run()
+    result.check_stderr("recursive .read")
+
 @pytest.mark.parametrize('generated_file', ["select 42"], indirect=True)
 def test_execute_file(shell, generated_file):
     test = (

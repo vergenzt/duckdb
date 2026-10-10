@@ -263,6 +263,8 @@ public:
 	string duckdb_rc_path;
 	//! Canonical paths of files currently being processed by .read
 	unordered_set<string> active_read_files;
+	//! Paths of files currently being executed (-f, -init, .read), innermost last
+	vector<string> executing_files;
 	//! Startup text to display
 	StartupText startup_text = StartupText::ALL;
 	//! Whether or not the loading resources message was displayed
@@ -324,6 +326,7 @@ public:
 	bool OpenDatabase(const vector<string> &args);
 	bool SetOutputFile(const vector<string> &args, OutputCommand output_command);
 	bool ReadFromFile(const string &file);
+	bool ReadFromFileRelative(const string &file);
 	bool DisplaySchemas(const vector<string> &args);
 	MetadataResult DisplayEntries(const vector<string> &args, char type);
 	MetadataResult DisplayTables(const vector<string> &args);
