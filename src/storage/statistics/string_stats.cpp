@@ -1,6 +1,7 @@
 #include "duckdb/storage/statistics/string_stats.hpp"
 #include "duckdb/common/types/value.hpp"
 
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/typedefs.hpp"
@@ -626,8 +627,18 @@ void StringStats::MergeStats(BaseStatistics &stats, string_t &target, StringStat
 		return;
 	}
 	bool new_is_more_extreme = is_min ? comparison < 0 : comparison > 0;
+	// for min: a prefix is always <= its extensions, so the shorter value is already a safe lower bound
+	// for max: a truncated prefix represents unknown larger extensions and must be kept as the upper bound
+	if (!is_min && memcmp(source.GetData(), target.GetData(), MinValue(source.GetSize(), target.GetSize())) == 0) {
+		if (comparison < 0) {
+			// source is a prefix of target: source wins if it is truncated
+			new_is_more_extreme = source_type == StringStatsType::TRUNCATED_STATS;
+		} else {
+			// target is a prefix of source: target wins if it is truncated
+			new_is_more_extreme = target_type != StringStatsType::TRUNCATED_STATS;
+		}
+	}
 	if (!new_is_more_extreme) {
-		// old value is more extreme - bail
 		return;
 	}
 	// assign the new value
@@ -651,8 +662,12 @@ void StringStats::Merge(BaseStatistics &stats, const StringStatsData &other_data
 		string_data.has_total_string_length = false;
 	} else {
 		string_data.has_total_string_length = string_data.has_total_string_length && other_data.has_total_string_length;
-		if (string_data.has_total_string_length) {
-			string_data.total_string_length += other_data.total_string_length;
+		if (string_data.has_total_string_length &&
+		    !TryAddOperator::Operation<uint64_t, uint64_t, uint64_t>(
+		        string_data.total_string_length, other_data.total_string_length, string_data.total_string_length)) {
+			// the sum of the totals overflows - the total is no longer known
+			string_data.has_total_string_length = false;
+			string_data.total_string_length = 0;
 		}
 	}
 }

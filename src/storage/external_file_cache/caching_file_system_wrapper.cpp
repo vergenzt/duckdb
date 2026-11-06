@@ -221,6 +221,11 @@ FileMetadata CachingFileSystemWrapper::Stats(FileHandle &handle) {
 	return underlying_file_system.Stats(*file_handle);
 }
 
+optional<FileMetadata> CachingFileSystemWrapper::GetStatsIfExists(const OpenFileInfo &file,
+                                                                  optional_ptr<FileOpener> opener) {
+	return underlying_file_system.GetStatsIfExists(file, opener);
+}
+
 //===----------------------------------------------------------------------===//
 // Directory Operations
 //===----------------------------------------------------------------------===//
@@ -386,6 +391,10 @@ unique_ptr<FileHandle> CachingFileSystemWrapper::OpenCompressedFile(QueryContext
 
 void CachingFileSystemWrapper::SetDisabledFileSystems(const vector<string> &names) {
 	underlying_file_system.SetDisabledFileSystems(names);
+}
+
+vector<string> CachingFileSystemWrapper::GetDisabledFileSystems() {
+	return underlying_file_system.GetDisabledFileSystems();
 }
 
 bool CachingFileSystemWrapper::SubSystemIsDisabled(const string &name) {

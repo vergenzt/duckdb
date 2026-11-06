@@ -237,7 +237,7 @@ void ListValueFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 	ListVector::SetListSize(result, column_count * args.size());
 }
 
-unique_ptr<FunctionData> UnpivotBind(BindScalarFunctionInput &input) {
+void UnpivotResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &context = input.GetClientContext();
 	auto &bound_function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
@@ -273,13 +273,13 @@ unique_ptr<FunctionData> UnpivotBind(BindScalarFunctionInput &input) {
 		function_args.push_back(child_type);
 	}
 	bound_function.SetReturnType(LogicalType::LIST(child_type));
-	return make_uniq<VariableReturnBindData>(bound_function.GetReturnType());
 }
 
 unique_ptr<BaseStatistics> ListValueStats(ClientContext &context, FunctionStatisticsInput &input) {
 	auto &child_stats = input.child_stats;
 	auto &expr = input.expr;
 	auto list_stats = ListStats::CreateEmpty(expr.GetReturnType());
+	ListStats::SetLengthBounds(list_stats, child_stats.size(), child_stats.size());
 	auto &list_child_stats = ListStats::GetChildStats(list_stats);
 	for (idx_t i = 0; i < child_stats.size(); i++) {
 		list_child_stats.Merge(child_stats[i]);
@@ -292,7 +292,7 @@ unique_ptr<BaseStatistics> ListValueStats(ClientContext &context, FunctionStatis
 
 //! The arguments are cast to the child type of the list at execution time - if any of those casts can throw the
 //! function is fallible
-unique_ptr<FunctionData> ListValueBind(BindScalarFunctionInput &input) {
+void ListValueResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	auto &child_type = ListType::GetChildType(bound_function.GetReturnType());
 	for (auto &argument : input.GetArguments()) {
@@ -302,7 +302,6 @@ unique_ptr<FunctionData> ListValueBind(BindScalarFunctionInput &input) {
 			break;
 		}
 	}
-	return nullptr;
 }
 
 ScalarFunctionSet ListValueFun::GetFunctions() {
@@ -314,9 +313,11 @@ ScalarFunctionSet ListValueFun::GetFunctions() {
 
 	// Overload for 1 + N arguments, which returns a list of the arguments.
 	auto element_type = LogicalType::TEMPLATE("T");
-	ScalarFunction value_fun({element_type}, LogicalType::LIST(element_type), ListValueFunction, ListValueBind,
+	ScalarFunction value_fun({element_type}, LogicalType::LIST(element_type), ListValueFunction, nullptr,
 	                         ListValueStats);
-	value_fun.SetVarArgs(element_type);
+	value_fun.SetResolveTypesCallback(ListValueResolveTypes);
+	value_fun.GetSignature().GetParameter(0).SetName("value");
+	value_fun.GetSignature().AddArgs("args", element_type);
 	value_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	set.AddFunction(value_fun);
 
@@ -324,8 +325,10 @@ ScalarFunctionSet ListValueFun::GetFunctions() {
 }
 
 ScalarFunction UnpivotListFun::GetFunction() {
-	ScalarFunction fun("unpivot_list", {}, LogicalTypeId::LIST, ListValueFunction, UnpivotBind, ListValueStats);
-	fun.SetVarArgs(LogicalTypeId::ANY);
+	ScalarFunction fun("unpivot_list", {}, LogicalTypeId::LIST, ListValueFunction, VariableReturnBindData::Bind,
+	                   ListValueStats);
+	fun.SetResolveTypesCallback(UnpivotResolveTypes);
+	fun.GetSignature().AddArgs("args", LogicalTypeId::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
 }

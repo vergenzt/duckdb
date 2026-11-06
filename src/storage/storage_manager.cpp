@@ -1,6 +1,7 @@
 #include "duckdb/storage/storage_manager.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -10,9 +11,9 @@
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/valid_checker.hpp"
 #include "duckdb/storage/checkpoint_manager.hpp"
 #include "duckdb/storage/in_memory_block_manager.hpp"
-#include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/single_file_block_manager.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/storage/table/column_data.hpp"
@@ -49,9 +50,8 @@ void StorageOptions::SetEncryptionVersion(string &storage_version_user_provided)
 
 	switch (target_encryption_version) {
 	case EncryptionTypes::V0_1:
-		// storage version not explicitly set
+		// without an explicit storage version, new files get the default on creation and existing files keep theirs
 		if (storage_version == StorageVersion::INVALID && storage_version_user_provided.empty()) {
-			storage_version = StorageVersion::V1_5_0;
 			break;
 		}
 		// storage version set, but v1.4.0 =< storage < v1.5.0
@@ -74,12 +74,7 @@ void StorageOptions::SetEncryptionVersion(string &storage_version_user_provided)
 		break;
 
 	case EncryptionTypes::V0_0:
-		// we set this to V0 to V1.5.0 if no explicit storage version provided
-		if (storage_version == StorageVersion::INVALID && storage_version_user_provided.empty()) {
-			storage_version = StorageVersion::V1_5_0;
-			break;
-		}
-		// if storage version is provided, we do nothing
+		// without an explicit storage version, new files get the default on creation and existing files keep theirs
 		break;
 	default:
 		throw InvalidConfigurationException("Encryption version is not set");
@@ -141,7 +136,11 @@ void StorageOptions::Initialize(unordered_map<string, Value> &options) {
 				    entry.second.ToString());
 			}
 		} else if (entry.first == "mmap_reserve_size") {
-			mmap_reserve_size = DBConfig::ParseMemoryLimit(entry.second.ToString());
+			const auto reserve_size = DBConfig::ParseMemoryLimitOrMaximum(entry.second.ToString());
+			if (reserve_size > NumericCast<idx_t>(NumericLimits<int64_t>::Maximum())) {
+				throw BinderException("MMAP_RESERVE_SIZE \"%s\" is out of range", entry.second.ToString());
+			}
+			mmap_reserve_size = reserve_size;
 		} else {
 			throw BinderException("Unrecognized option for attach \"%s\"", entry.first);
 		}
@@ -179,10 +178,6 @@ StorageManager &StorageManager::Get(Catalog &catalog) {
 
 DatabaseInstance &StorageManager::GetDatabase() {
 	return db.GetDatabase();
-}
-
-ObjectCache &ObjectCache::GetObjectCache(ClientContext &context) {
-	return context.db->GetObjectCache();
 }
 
 idx_t StorageManager::GetWALSize() {
@@ -276,10 +271,6 @@ bool StorageManager::WALStartCheckpoint(MetaBlockPointer meta_block, CheckpointO
 		return false;
 	}
 	// start the checkpoint process around the WAL
-	if (GetWALSize() == 0) {
-		// no WAL - we don't need to do anything here
-		return false;
-	}
 	// verify the main WAL is the active WAL currently
 	if (wal->GetPath() != wal_path) {
 		throw InternalException("Current WAL path \"%s\" does not match base WAL path \"%s\" in WALStartCheckpoint",
@@ -502,6 +493,11 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		if (options.storage_version == StorageVersion::INVALID) {
 			// when creating a new database we default to the serialization version specified in the config
 			options.storage_version = config.options.storage_compatibility.storage_version;
+			if (storage_options.encryption &&
+			    StorageManager::IsPriorToVersion(StorageVersion::V1_5_0, options.storage_version)) {
+				// the default encryption format needs at least v1.5.0
+				options.storage_version = StorageVersion::V1_5_0;
+			}
 		}
 
 		// Initialize the block manager before creating a new database.
@@ -564,9 +560,8 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		unique_ptr<MetricsTimer> timer = nullptr;
 
 		// Start timing the storage load step.
-		auto client_context = context.GetClientContext();
-		if (client_context) {
-			auto profiler = client_context->client_data->profiler;
+		auto profiler = Context::TryGetQueryProfiler(context.GetContext());
+		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachLoadStorageLatency>());
 		}
 
@@ -580,8 +575,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		}
 
 		// Start timing the WAL replay step.
-		if (client_context) {
-			auto profiler = client_context->client_data->profiler;
+		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachReplayWALLatency>());
 		}
 
@@ -633,6 +627,7 @@ public:
 	bool HasRowGroupData() override;
 
 private:
+	StorageManager &storage;
 	idx_t initial_wal_size = 0;
 	idx_t initial_written = 0;
 	WriteAheadLog &wal;
@@ -641,7 +636,7 @@ private:
 };
 
 SingleFileStorageCommitState::SingleFileStorageCommitState(StorageManager &storage, WriteAheadLog &wal)
-    : wal(wal), state(WALCommitState::IN_PROGRESS) {
+    : storage(storage), wal(wal), state(WALCommitState::IN_PROGRESS) {
 	auto initial_size = storage.GetWALSize();
 	initial_written = wal.GetTotalWritten();
 	initial_wal_size = initial_size;
@@ -673,6 +668,16 @@ void SingleFileStorageCommitState::RevertCommit() {
 		// remove any entries written into the WAL by truncating it
 		wal.Truncate(initial_wal_size);
 	}
+	auto &block_manager = storage.GetBlockManager();
+	for (auto &entry : optimistically_written_data) {
+		for (auto &rg_entry : entry.second) {
+			if (rg_entry.second.row_group_data) {
+				for (auto &block_id : rg_entry.second.row_group_data->GetBlockIds()) {
+					block_manager.MarkBlockAsModified(block_id);
+				}
+			}
+		}
+	}
 	state = WALCommitState::TRUNCATED;
 }
 
@@ -680,7 +685,20 @@ idx_t SingleFileStorageCommitState::FlushCommit(bool sync_now) {
 	if (state != WALCommitState::IN_PROGRESS) {
 		return 0;
 	}
+
 	// Move the blocks in this COMMIT into the WAL and mark them as "in use".
+	auto abort_mode = Settings::Get<DebugCheckpointAbortSetting>(storage.GetDatabase());
+	if (wal.Initialized() && abort_mode == CheckpointAbort::DEBUG_ABORT_BEFORE_WAL_FLUSH) {
+		auto &writer = wal.Initialize();
+		writer.Sync();
+		storage.SetWALSize(writer.GetFileSize());
+		ValidChecker::Invalidate(storage.GetDatabase(), "Simulated crash before WAL_FLUSH write");
+		ValidChecker::Invalidate(storage.GetAttached(), "Simulated crash before WAL_FLUSH write");
+		// Prevent `RevertCommit` from truncating the WAL so the torn records are kept for crash recovery
+		state = WALCommitState::FLUSHED;
+		throw FatalException("Simulated crash before WAL_FLUSH write");
+	}
+
 	idx_t wal_sync_offset = 0;
 	if (sync_now) {
 		wal.Flush();
@@ -736,15 +754,17 @@ bool SingleFileStorageManager::IsCheckpointClean(MetaBlockPointer checkpoint_id)
 	return block_manager->IsRootBlock(checkpoint_id);
 }
 
-unique_ptr<CheckpointWriter> SingleFileStorageManager::CreateCheckpointWriter(QueryContext context,
-                                                                              CheckpointOptions options) {
+unique_ptr<CheckpointWriter>
+SingleFileStorageManager::CreateCheckpointWriter(QueryContext context, CheckpointOptions options,
+                                                 optional_ptr<ClientContext> client_context) {
 	if (InMemory()) {
-		return make_uniq<InMemoryCheckpointer>(context, db, *block_manager, *this, options);
+		return make_uniq<InMemoryCheckpointer>(context, db, *block_manager, *this, options, client_context);
 	}
-	return make_uniq<SingleFileCheckpointWriter>(context, db, *block_manager, options);
+	return make_uniq<SingleFileCheckpointWriter>(context, db, *block_manager, options, client_context);
 }
 
-void SingleFileStorageManager::CreateCheckpoint(QueryContext context, CheckpointOptions options) {
+void SingleFileStorageManager::CreateCheckpoint(QueryContext context, CheckpointOptions options,
+                                                optional_ptr<ClientContext> client_context) {
 	if (read_only || !load_complete) {
 		return;
 	}
@@ -772,14 +792,14 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	if (wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
 		try {
 			// Start timing the checkpoint.
-			auto client_context = context.GetClientContext();
+			auto profiler = Context::TryGetQueryProfiler(context.GetContext());
 			MetricsTimer timer;
-			if (client_context) {
-				timer = client_context->client_data->profiler->StartTimer<MetricStorageCheckpointLatency>();
+			if (profiler) {
+				timer = profiler->StartTimer<MetricStorageCheckpointLatency>();
 			}
 
 			// Write the checkpoint.
-			auto checkpointer = CreateCheckpointWriter(context, options);
+			auto checkpointer = CreateCheckpointWriter(context, options, client_context);
 			checkpointer->CreateCheckpoint();
 			timer.EndTimer();
 

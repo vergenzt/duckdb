@@ -114,17 +114,30 @@ SELECT * FROM histogram_values(booleans, b::INTEGER)
 0	75
 1	25
 
-mode skip instable
-
-# FIXME: booleans do not work yet because of quantile turning any unsupported type into VARCHAR
 query II
-SELECT * FROM histogram_values(booleans, b)
+SELECT * FROM histogram_values(booleans, b) ORDER BY bin
 ----
+false	75
+true	25
 
 # lists
-# FIXME: lists do not work yet because of quantile turning any unsupported type into VARCHAR
 query II
-SELECT * FROM histogram_values(integers, [i%2])
+SELECT * FROM histogram_values(integers, [i%2]) ORDER BY bin
 ----
+[0]	66
+[1]	64
 
-mode unskip
+# dates - equi_width_bins keeps DATE bins, so the histogram keys stay DATE
+statement ok
+create table dates(d date);
+
+statement ok
+insert into dates select date '2020-01-01' + interval (r*7) day from range(20) t(r)
+
+query II
+SELECT bin, count FROM histogram_values(dates, d, bin_count := 4)
+----
+2020-02-04	5
+2020-03-07	5
+2020-04-10	5
+2020-05-13	5

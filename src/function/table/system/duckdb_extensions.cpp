@@ -84,11 +84,9 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 		auto extension = ExtensionHelper::GetDefaultExtension(i);
 		ExtensionInformation info;
 		info.name = extension.name;
-		info.installed = extension.statically_loaded;
+		info.installed = false;
 		info.loaded = false;
-		info.file_path = extension.statically_loaded ? "(BUILT-IN)" : string();
-		info.install_mode =
-		    extension.statically_loaded ? ExtensionInstallMode::STATICALLY_LINKED : ExtensionInstallMode::NOT_INSTALLED;
+		info.install_mode = ExtensionInstallMode::NOT_INSTALLED;
 		info.description = extension.description;
 		for (idx_t k = 0; k < alias_count; k++) {
 			auto alias = ExtensionHelper::GetInternalExtensionAlias(k);
@@ -99,12 +97,24 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 		installed_extensions[info.name] = std::move(info);
 	}
 
+	// Extensions linked into this binary are built in, whether or not the default list knows them
+	for (auto &linked : DBConfig::GetConfig(db).linked_extensions) {
+		if (!linked.load) {
+			continue;
+		}
+		auto &info = installed_extensions[linked.name];
+		info.name = linked.name;
+		info.installed = true;
+		info.file_path = "(BUILT-IN)";
+		info.install_mode = ExtensionInstallMode::STATICALLY_LINKED;
+	}
+
 	// Secondly we scan all installed extensions and their install info
 #ifndef WASM_LOADABLE_EXTENSIONS
 	auto ext_directories = ExtensionHelper::GetExtensionDirectoryPath(context);
 	for (const auto &ext_directory : ext_directories) {
 		fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-			if (!StringUtil::EndsWith(path, ".duckdb_extension")) {
+			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
 				return;
 			}
 			ExtensionInformation info;
@@ -246,7 +256,10 @@ void DuckDBExtensionsFunction(ClientContext &context, TableFunctionInput &data_p
 
 void DuckDBExtensionsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunctionSet functions("duckdb_extensions");
-	functions.AddFunction(TableFunction({}, DuckDBExtensionsFunction, DuckDBExtensionsBind, DuckDBExtensionsInit));
+	TableFunction extensions_fun({}, DuckDBExtensionsFunction, DuckDBExtensionsBind, DuckDBExtensionsInit);
+	// reads installed and loaded extension state, which autoloading can change while a query executes
+	extensions_fun.stability = FunctionStability::VOLATILE;
+	functions.AddFunction(std::move(extensions_fun));
 	set.AddFunction(functions);
 }
 
