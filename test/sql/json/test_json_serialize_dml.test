@@ -1,0 +1,305 @@
+# name: test/sql/json/test_json_serialize_dml.test
+# description: json_serialize_sql and json_deserialize_sql on INSERT, UPDATE and DELETE statements
+# group: [json]
+
+require json
+
+statement ok
+CREATE TABLE tbl (i INTEGER PRIMARY KEY, s VARCHAR);
+
+statement ok
+CREATE TABLE other (i INTEGER, s VARCHAR);
+
+# the statement type is serialized alongside the query node
+query II
+SELECT json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'')')->'statements'->0->>'type',
+       json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'')')->'statements'->0->'node'->>'type';
+----
+INSERT_STATEMENT	INSERT_QUERY_NODE
+
+query II
+SELECT json_serialize_sql('UPDATE tbl SET s = ''b''')->'statements'->0->>'type',
+       json_serialize_sql('UPDATE tbl SET s = ''b''')->'statements'->0->'node'->>'type';
+----
+UPDATE_STATEMENT	UPDATE_QUERY_NODE
+
+query II
+SELECT json_serialize_sql('DELETE FROM tbl')->'statements'->0->>'type',
+       json_serialize_sql('DELETE FROM tbl')->'statements'->0->'node'->>'type';
+----
+DELETE_STATEMENT	DELETE_QUERY_NODE
+
+query II
+SELECT json_serialize_sql('SELECT 1')->'statements'->0->>'type',
+       json_serialize_sql('SELECT 1')->'statements'->0->'node'->>'type';
+----
+SELECT_STATEMENT	SELECT_NODE
+
+# SELECT is the default statement type, so skip_default drops it for SELECT but keeps it for DML
+query IIII
+SELECT json_serialize_sql('SELECT 1', skip_default := true)->'statements'->0->>'type',
+       json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'')', skip_default := true)->'statements'->0->>'type',
+       json_serialize_sql('UPDATE tbl SET s = ''b''', skip_default := true)->'statements'->0->>'type',
+       json_serialize_sql('DELETE FROM tbl', skip_default := true)->'statements'->0->>'type';
+----
+NULL	INSERT_STATEMENT	UPDATE_STATEMENT	DELETE_STATEMENT
+
+# all serialization options are accepted for DML statements
+statement ok
+SELECT json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'')', skip_default := true, skip_empty := true, skip_null := true, format := true);
+
+statement ok
+SELECT json_serialize_sql('UPDATE tbl SET s = ''b'' WHERE i = 1', skip_default := true, skip_empty := true, skip_null := true, format := true);
+
+statement ok
+SELECT json_serialize_sql('DELETE FROM tbl WHERE i = 1', skip_default := true, skip_empty := true, skip_null := true, format := true);
+
+# INSERT round trips
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl VALUES (1, ''a''), (2, ''b'')'));
+----
+INSERT INTO tbl (VALUES (1, 'a'), (2, 'b'))
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl (s, i) VALUES (''a'', 1)'));
+----
+INSERT INTO tbl (s, i) (VALUES ('a', 1))
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO main.tbl SELECT i + 1, s FROM other WHERE i > 0'));
+----
+INSERT INTO main.tbl SELECT (i + 1), s FROM other WHERE (i > 0)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl DEFAULT VALUES'));
+----
+INSERT INTO tbl DEFAULT VALUES
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT OR REPLACE INTO tbl VALUES (1, ''a'')'));
+----
+INSERT OR REPLACE INTO tbl (VALUES (1, 'a'))
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT OR IGNORE INTO tbl VALUES (1, ''a'')'));
+----
+INSERT INTO tbl (VALUES (1, 'a')) ON CONFLICT DO NOTHING
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'') ON CONFLICT (i) DO UPDATE SET s = excluded.s WHERE tbl.s IS NULL'));
+----
+INSERT INTO tbl (VALUES (1, 'a')) ON CONFLICT (i) DO UPDATE SET s = excluded.s WHERE (tbl.s IS NULL)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'') ON CONFLICT DO NOTHING'));
+----
+INSERT INTO tbl (VALUES (1, 'a')) ON CONFLICT DO NOTHING
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'') RETURNING i, upper(s) AS u'));
+----
+INSERT INTO tbl (VALUES (1, 'a')) RETURNING i, upper(s) AS u
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl BY NAME SELECT 1 AS i, ''a'' AS s'));
+----
+INSERT INTO tbl BY NAME SELECT 1 AS i, 'a' AS s
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('WITH cte AS (SELECT 1 AS i) INSERT INTO tbl SELECT i, ''a'' FROM cte'));
+----
+WITH cte AS (SELECT 1 AS i) INSERT INTO tbl SELECT i, 'a' FROM cte
+
+# UPDATE round trips
+query I
+SELECT json_deserialize_sql(json_serialize_sql('UPDATE tbl SET s = ''b'' WHERE i = 1'));
+----
+UPDATE tbl SET s = 'b' WHERE (i = 1)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('UPDATE tbl SET i = i + 1, s = upper(s)'));
+----
+UPDATE tbl SET i = (i + 1), s = upper(s)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('UPDATE tbl SET s = other.s FROM other WHERE tbl.i = other.i'));
+----
+UPDATE tbl SET s = other.s FROM other WHERE (tbl.i = other.i)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('UPDATE tbl SET s = DEFAULT WHERE i = 1 RETURNING *'));
+----
+UPDATE tbl SET s = DEFAULT WHERE (i = 1) RETURNING *
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('WITH cte AS (SELECT 1 AS i) UPDATE tbl SET s = ''b'' FROM cte WHERE tbl.i = cte.i'));
+----
+WITH cte AS (SELECT 1 AS i) UPDATE tbl SET s = 'b' FROM cte WHERE (tbl.i = cte.i)
+
+# DELETE round trips
+query I
+SELECT json_deserialize_sql(json_serialize_sql('DELETE FROM tbl'));
+----
+DELETE FROM tbl
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('DELETE FROM main.tbl WHERE i = 1'));
+----
+DELETE FROM main.tbl WHERE (i = 1)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('DELETE FROM tbl USING other WHERE tbl.i = other.i'));
+----
+DELETE FROM tbl USING other WHERE (tbl.i = other.i)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('DELETE FROM tbl WHERE i IN (SELECT i FROM other) RETURNING *'));
+----
+DELETE FROM tbl WHERE (i = ANY(SELECT i FROM other)) RETURNING *
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('WITH cte AS (SELECT 1 AS i) DELETE FROM tbl USING cte WHERE tbl.i = cte.i'));
+----
+WITH cte AS (SELECT 1 AS i) DELETE FROM tbl USING cte WHERE (tbl.i = cte.i)
+
+query I
+SELECT json_deserialize_sql(json_serialize_sql('TRUNCATE tbl'));
+----
+DELETE FROM tbl
+
+# parameters and the named parameter map survive the round trip (the map is unordered, so sort it)
+query II
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl VALUES ($i, $s)')),
+       list_sort((json_serialize_sql('INSERT INTO tbl VALUES ($i, $s)')->'statements'->0->'named_param_map')::VARCHAR[]);
+----
+INSERT INTO tbl (VALUES ($i, $s))	['{"key":"i","value":1}', '{"key":"s","value":2}']
+
+query II
+SELECT json_deserialize_sql(json_serialize_sql('UPDATE tbl SET s = $s WHERE i = $i')),
+       list_sort((json_serialize_sql('UPDATE tbl SET s = $s WHERE i = $i')->'statements'->0->'named_param_map')::VARCHAR[]);
+----
+UPDATE tbl SET s = $s WHERE (i = $i)	['{"key":"i","value":2}', '{"key":"s","value":1}']
+
+query II
+SELECT json_deserialize_sql(json_serialize_sql('DELETE FROM tbl WHERE i = $1 OR i = ?')),
+       list_sort((json_serialize_sql('DELETE FROM tbl WHERE i = $1 OR i = ?')->'statements'->0->'named_param_map')::VARCHAR[]);
+----
+DELETE FROM tbl WHERE ((i = $1) OR (i = $2))	['{"key":"1","value":1}', '{"key":"2","value":2}']
+
+# statements of different types can be mixed in one input
+query I
+SELECT json_deserialize_sql(json_serialize_sql('INSERT INTO tbl VALUES (1, ''a''); SELECT * FROM tbl; UPDATE tbl SET s = ''b''; DELETE FROM tbl'));
+----
+INSERT INTO tbl (VALUES (1, 'a')); SELECT * FROM tbl; UPDATE tbl SET s = 'b'; DELETE FROM tbl
+
+query I
+SELECT json_serialize_sql('INSERT INTO tbl VALUES (1, ''a''); SELECT * FROM tbl; UPDATE tbl SET s = ''b''; DELETE FROM tbl')->>'$.statements[*].type';
+----
+[INSERT_STATEMENT, SELECT_STATEMENT, UPDATE_STATEMENT, DELETE_STATEMENT]
+
+# other statement types are still rejected, as an error document
+query II
+SELECT json_serialize_sql('CREATE TABLE t2 (i INTEGER)')->>'error',
+       json_serialize_sql('CREATE TABLE t2 (i INTEGER)')->>'error_message';
+----
+true	Only SELECT, INSERT, DELETE, or UPDATE statements can be serialized to json!
+
+query I
+SELECT json_serialize_sql('MERGE INTO tbl USING other ON tbl.i = other.i WHEN MATCHED THEN DELETE')->>'error_message';
+----
+Only SELECT, INSERT, DELETE, or UPDATE statements can be serialized to json!
+
+# one unsupported statement fails the whole batch
+query II
+SELECT json_serialize_sql('INSERT INTO tbl VALUES (1, ''a''); CREATE TABLE t2 (i INTEGER)')->>'error',
+       json_serialize_sql('INSERT INTO tbl VALUES (1, ''a''); CREATE TABLE t2 (i INTEGER)')->>'statements';
+----
+true	NULL
+
+statement error
+SELECT json_deserialize_sql(json_serialize_sql('CREATE TABLE t2 (i INTEGER)'));
+----
+Parser Error: Error parsing json: not implemented: Only SELECT, INSERT, DELETE, or UPDATE statements can be serialized to json!
+
+# a serialized statement without a type is a SELECT, for documents written before the type existed
+query I
+SELECT json_deserialize_sql('{"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+SELECT 1
+
+# a DML statement without a node is rejected
+statement error
+SELECT json_deserialize_sql('{"statements":[{"type":"INSERT_STATEMENT"}]}');
+----
+Parser Error: Error parsing json: no query node found in json
+
+statement error
+SELECT json_deserialize_sql('{"statements":[{"type":"UPDATE_STATEMENT", "node": null}]}');
+----
+Parser Error: Error parsing json: no query node found in json
+
+statement error
+SELECT * FROM json_execute_serialized_sql('{"statements":[{"type":"DELETE_STATEMENT"}]}');
+----
+Parser Error: Error parsing json: no query node found in json
+
+# statement types that cannot be deserialized are rejected
+statement error
+SELECT json_deserialize_sql('{"statements":[{"type":"CREATE_STATEMENT"}]}');
+----
+Serialization Error: Unsupported type for deserialization of SQLStatement!
+
+statement error
+SELECT json_deserialize_sql('{"statements":[{"type":"NOT_A_STATEMENT"}]}');
+----
+Not implemented Error: Enum value: unrecognized value "NOT_A_STATEMENT" for enum "StatementType"
+
+statement error
+SELECT json_deserialize_sql('{"statements":[{"type":42}]}');
+----
+Parser Error: property 'type' expected type 'string', but got type: 'uint'
+
+# json_execute_serialized_sql only executes SELECT statements
+query I
+SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 42'));
+----
+42
+
+statement error
+SELECT * FROM json_execute_serialized_sql(json_serialize_sql('INSERT INTO tbl VALUES (1, ''a'')'));
+----
+Binder Error: json_execute_serialized_sql expects a SELECT statement
+
+statement error
+SELECT * FROM json_execute_serialized_sql(json_serialize_sql('UPDATE tbl SET s = ''b'''));
+----
+Binder Error: json_execute_serialized_sql expects a SELECT statement
+
+statement error
+SELECT * FROM json_execute_serialized_sql(json_serialize_sql('DELETE FROM tbl'));
+----
+Binder Error: json_execute_serialized_sql expects a SELECT statement
+
+query I
+SELECT count(*) FROM tbl;
+----
+0
+
+# the pragma form re-executes the deserialized statement text, so it can run DML
+statement ok
+PRAGMA json_execute_serialized_sql(json_serialize_sql('INSERT INTO tbl VALUES (1, ''a''), (2, ''b'')'));
+
+query II
+PRAGMA json_execute_serialized_sql(json_serialize_sql('UPDATE tbl SET s = upper(s) WHERE i = 2 RETURNING *'));
+----
+2	B
+
+query II
+PRAGMA json_execute_serialized_sql(json_serialize_sql('DELETE FROM tbl WHERE i = 1 RETURNING *'));
+----
+1	a
+
+query II
+SELECT * FROM tbl;
+----
+2	B

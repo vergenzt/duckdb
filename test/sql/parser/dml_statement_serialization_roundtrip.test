@@ -1,0 +1,189 @@
+# name: test/sql/parser/dml_statement_serialization_roundtrip.test
+# description: INSERT, UPDATE and DELETE statements survive a binary serialization round trip
+# group: [parser]
+
+# debug_verify_statement='serialize_statement' serializes every supported statement and executes the
+# deserialized copy instead, so any property lost in SQLStatement::Serialize shows up as a wrong result.
+statement ok
+SET debug_verify_statement='serialize_statement'
+
+statement ok
+CREATE TABLE tbl (i INTEGER PRIMARY KEY, s VARCHAR DEFAULT 'dflt');
+
+statement ok
+CREATE TABLE other (i INTEGER, s VARCHAR);
+
+# --- INSERT ----------------------------------------------------------------------------------------
+
+statement ok
+INSERT INTO tbl VALUES (1, 'a'), (2, 'b');
+
+statement ok
+INSERT INTO tbl (s, i) VALUES ('c', 3);
+
+statement ok
+INSERT INTO tbl (i) VALUES (4);
+
+statement ok
+INSERT INTO tbl BY NAME SELECT 'e' AS s, 5 AS i;
+
+statement ok
+INSERT INTO main.tbl SELECT i + 10, s FROM tbl WHERE i <= 2;
+
+statement ok
+WITH cte AS (SELECT 20 AS i, 'cte' AS s) INSERT INTO tbl SELECT * FROM cte;
+
+query II
+SELECT * FROM tbl ORDER BY i;
+----
+1	a
+2	b
+3	c
+4	dflt
+5	e
+11	a
+12	b
+20	cte
+
+statement ok
+INSERT OR IGNORE INTO tbl VALUES (1, 'ignored');
+
+statement ok
+INSERT OR REPLACE INTO tbl VALUES (2, 'replaced');
+
+statement ok
+INSERT INTO tbl VALUES (3, 'x') ON CONFLICT DO NOTHING;
+
+statement ok
+INSERT INTO tbl VALUES (4, 'conflict') ON CONFLICT (i) DO UPDATE SET s = excluded.s || '!' WHERE tbl.s = 'dflt';
+
+query II
+SELECT * FROM tbl WHERE i <= 4 ORDER BY i;
+----
+1	a
+2	replaced
+3	c
+4	conflict!
+
+query II
+INSERT INTO tbl VALUES (6, 'f') RETURNING i * 2, upper(s) AS u;
+----
+12	F
+
+statement ok
+INSERT INTO other DEFAULT VALUES;
+
+query II
+SELECT * FROM other;
+----
+NULL	NULL
+
+# --- UPDATE ----------------------------------------------------------------------------------------
+
+statement ok
+UPDATE tbl SET s = 'updated' WHERE i = 1;
+
+statement ok
+UPDATE tbl SET i = i + 100, s = upper(s) WHERE i IN (11, 12);
+
+statement ok
+UPDATE tbl SET s = DEFAULT WHERE i = 3;
+
+statement ok
+INSERT INTO other VALUES (5, 'from other');
+
+statement ok
+UPDATE tbl SET s = other.s FROM other WHERE tbl.i = other.i;
+
+statement ok
+WITH cte AS (SELECT 20 AS i, 'from cte' AS s) UPDATE tbl SET s = cte.s FROM cte WHERE tbl.i = cte.i;
+
+query II
+UPDATE tbl SET s = s || '?' WHERE i = 6 RETURNING *;
+----
+6	f?
+
+query II
+SELECT * FROM tbl ORDER BY i;
+----
+1	updated
+2	replaced
+3	dflt
+4	conflict!
+5	from other
+6	f?
+20	from cte
+111	A
+112	B
+
+# --- DELETE ----------------------------------------------------------------------------------------
+
+statement ok
+DELETE FROM tbl WHERE i = 1;
+
+statement ok
+DELETE FROM main.tbl WHERE i IN (SELECT i FROM other);
+
+statement ok
+DELETE FROM tbl USING other WHERE tbl.s = other.s;
+
+statement ok
+WITH cte AS (SELECT 20 AS i) DELETE FROM tbl USING cte WHERE tbl.i = cte.i;
+
+query II
+DELETE FROM tbl WHERE i > 100 RETURNING *;
+----
+111	A
+112	B
+
+query II
+SELECT * FROM tbl ORDER BY i;
+----
+2	replaced
+3	dflt
+4	conflict!
+6	f?
+
+statement ok
+TRUNCATE tbl;
+
+query I
+SELECT count(*) FROM tbl;
+----
+0
+
+statement ok
+DELETE FROM other;
+
+# --- prepared statements with parameters ----------------------------------------------------------
+
+statement ok
+PREPARE ins AS INSERT INTO tbl VALUES ($i, $s);
+
+statement ok
+EXECUTE ins(i := 7, s := 'g');
+
+statement ok
+PREPARE upd AS UPDATE tbl SET s = $1 WHERE i = $2;
+
+statement ok
+EXECUTE upd('G', 7);
+
+query II
+SELECT * FROM tbl;
+----
+7	G
+
+statement ok
+PREPARE del AS DELETE FROM tbl WHERE i = ?;
+
+statement ok
+EXECUTE del(7);
+
+query I
+SELECT count(*) FROM tbl;
+----
+0
+
+statement ok
+RESET debug_verify_statement
